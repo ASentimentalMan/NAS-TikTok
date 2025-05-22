@@ -100,6 +100,7 @@ docker save -o nas-tiktok.tar nas-tiktok
 ```bash
 # Startup parameter description
 docker run -d \
+  --name nas-tiktok \
   # /cert -> Certificate folder, must contain valid fullchain.pem and privkey.pem
   -v /cert:/workspace/cert \
   # /source -> Resource folder, resources to be browsed should be mapped here

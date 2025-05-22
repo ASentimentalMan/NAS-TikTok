@@ -100,6 +100,7 @@ docker save -o nas-tiktok.tar nas-tiktok
 ```bash
 # 启动参数说明
 docker run -d \
+  --name nas-tiktok \
   # /cert -> 证书文件夹，需包含有效的 fullchain.pem 和 privkey.pem
   -v /cert:/workspace/cert \
   # /source -> 资源文件夹，需要被浏览的资源映射到这里
