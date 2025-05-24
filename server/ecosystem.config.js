@@ -2,7 +2,7 @@ export const apps = [
   {
     name: 'nas-tiktok', // 应用名称
     cwd: '/workspace/server', // 当前工作目录，通常是构建后代码所在位置
-    script: './dist/index.js', // 启动脚本（编译后的入口）
+    script: './dist/main.js', // 启动脚本（编译后的入口）
     /* 进程管理 */
     exec_mode: 'cluster', // 使用 cluster 模式（推荐用于无状态服务）
     instances: 'max', // 根据 CPU 核数自动启动多个进程

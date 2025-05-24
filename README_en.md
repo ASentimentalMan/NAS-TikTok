@@ -24,7 +24,7 @@ Are you overwhelmed by too many resources on your NAS and don't know what to wat
 
 2. Performs reservoir sampling on the resource library (no database/no cache).
 
-3. Supports HTTPS HTTP2 (requires your own domain/certificate).
+3. Supports HTTPS HTTP2 (requires your own domain/certificates).
 
 4. Supports LAN-only access (Docker requires host mode).
 
@@ -42,9 +42,13 @@ Are you overwhelmed by too many resources on your NAS and don't know what to wat
 
 5. Supports cache-free PWA: iOS devices can add it to the home screen from Safari (Android not tested) and use it as an app, with no data cached on the device.
 
-## Online Access
+## Online preview
 
-Currently, online access and Docker images are not provided (as I'm unsure if there's interest in this project~).
+[NAS-Tiktok Preview](https://dev.engraved.cn/nas-tiktok)
+
+account：preview
+
+password：preview
 
 ## Running
 
@@ -76,6 +80,31 @@ Open your browser and visit: [http://127.0.0.1:3000](http://127.0.0.1:3000)
 
 ### Deployment
 
+---
+
+#### Docker Internal Structure
+
+```bash
+/workspace
+├── certs/ # Certificate folder
+│   ├── fullchain.pem # Certificate
+│   └── privkey.pem # Private key
+├── statics/ # Resource directory
+├── server/
+│   └── ...
+└── client/
+    └── ...
+```
+
+#### Pull from Docker Hub
+
+```bash
+# Pull docker image
+docker pull asentimentalman/nas-tiktok:latest
+```
+
+#### Local build
+
 ```bash
 # Create a Docker image
 docker build -t nas-tiktok .
@@ -84,30 +113,20 @@ docker build -t nas-tiktok .
 docker save -o nas-tiktok.tar nas-tiktok
 ```
 
-#### Docker Internal Structure
-
-```bash
-/workspace
-├── cert/ # Certificate folder
-│   ├── fullchain.pem # Certificate
-│   └── privkey.pem # Private key
-├── static/ # Resource directory
-└── ...
-```
-
 #### Docker Startup Command
 
 ```bash
 # Startup parameter description
 docker run -d \
-  # /cert -> Certificate folder, must contain valid fullchain.pem and privkey.pem
-  -v /cert:/workspace/cert \
-  # /source -> Resource folder, resources to be browsed should be mapped here
+  --name nas-tiktok \
+  # /certs -> Certificates folder: must contain valid fullchain.pem and privkey.pem
+  -v /certs:/workspace/certs \
+  # /source -> Resource folder: resources to be browsed should be mapped here
   -v /source:/workspace/statics \
   # port -> Mapped port: only required for bridge mode
   # In bridge mode, Docker cannot get the real IP, so IP change logout and LAN-only access features will not be available
   -p port:port \
-  # SSL -> Enable SSL: if enabled, cert folder and certificates must be provided
+  # SSL -> Enable SSL: if enabled, certs folder and certificates must be provided
   -e SSL=false \
   # LAN_ONLY -> Allow LAN-only access
   -e LAN_ONLY=false \
@@ -115,8 +134,8 @@ docker run -d \
   -e ACCOUNT= \
   # PASSWORD -> Your password
   -e PASSWORD= \
-  # APP_HOST -> Listen address: 0.0.0.0 means listen only on IPv4; :: means listen on both IPv4 and IPv6
-  -e APP_HOST=0.0.0.0 \
+  # IPv6 -> Listen address: 0.0.0.0 means listen only on IPv4; :: means listen on both IPv4 and IPv6
+  -e IPv6=false \
   # VITE_API_URL -> Access address: Server/NAS address, e.g., 192.168.1.100 or your domain
   -e VITE_API_URL= \
   # VITE_API_PORT -> Running port: e.g., 3000 (should match the mapped port in bridge mode)
@@ -136,7 +155,7 @@ docker run -d \
 
 3. LAN_ONLY: Only works in an IPv4 environment and when --network host is used, because Docker can only get the real access IP when bound to the host, otherwise it cannot impose restrictions.
 
-4. APP_HOST: If set to ::, IPv6 is enabled. If you have an IPv6 environment, you need to disable LAN_ONLY, as IPv6 cannot determine if access is from the local network and will block all connections.
+4. IPv6: If you have an IPv6 environment and enable IPv6 listening, you'll need to disable `LAN_ONLY`. This is because it's impossible to determine if a request is a local network access via an IPv6 address, and all requests would be blocked, leading to inaccessibility.
 
 ## Features and Suggestions
 

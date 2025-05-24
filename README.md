@@ -42,9 +42,13 @@
 
 5. 支持无缓 PWA：iOS 设备可以从 Safari 添加到桌面（安卓未测试）当作 APP 使用，且设备上不缓存任何数据
 
-## 在线访问
+## 在线预览
 
-目前暂不提供在线访问和 docker 镜像（因为不知道有没有人对这个项目感兴趣~）
+[NAS-Tiktok Preview](https://dev.engraved.cn/nas-tiktok)
+
+账号：preview
+
+密码：preview
 
 ## 运行
 
@@ -76,6 +80,31 @@ npm run dev
 
 ### 正式部署
 
+---
+
+#### Docker 内部结构
+
+```bash
+/workspace
+├── certs/ # 证书文件
+│   ├── fullchain.pem # 证书
+│   └── privkey.pem # 私钥
+├── static/ # 资源目录
+├── server/
+│   └── ...
+└── client/
+    └── ...
+```
+
+#### 在线拉取
+
+```bash
+# 拉取docker镜像
+docker pull asentimentalman/nas-tiktok:latest
+```
+
+#### 本地构建
+
 ```bash
 # 创建docker镜像
 docker build -t nas-tiktok .
@@ -84,48 +113,38 @@ docker build -t nas-tiktok .
 docker save -o nas-tiktok.tar nas-tiktok
 ```
 
-#### Docker 内部结构
-
-```bash
-/workspace
-├── cert/ # 证书文件
-│   ├── fullchain.pem # 证书
-│   └── privkey.pem # 私钥
-├── static/ # 资源目录
-└── ...
-```
-
 #### Docker 启动命令
 
 ```bash
 # 启动参数说明
 docker run -d \
-  # /cert -> 证书文件夹，需包含有效的 fullchain.pem 和 privkey.pem
-  -v /cert:/workspace/cert \
-  # /source -> 资源文件夹，需要被浏览的资源映射到这里
+  --name nas-tiktok \
+  # /certs -> 证书文件夹：需包含有效的 fullchain.pem 和 privkey.pem
+  -v /certs:/workspace/certs \
+  # /source -> 资源文件夹：需要被浏览的资源映射到这里
   -v /source:/workspace/statics \
   # port -> 映射端口：bridge模式才需要
   # bridge模式下docker无法拿到真实IP，更换IP退出与只能局域网访问功能将不可用
   -p port:port \
-  # SSL -> 是否开启：如果开启的话必须提供cert文件夹及证书
+  # SSL -> 是否开启：如果开启的话必须提供certs文件夹及证书
   -e SSL=false \
   # LAN_ONLY -> 是否只允许局域网访问
   -e LAN_ONLY=false \
+    # IPv6 -> 是否开启IPv6：开启的话LAN_ONLY会失效
+  -e IPv6=false \
+  # VITE_API_URL -> 访问地址：服务器/NAS的地址，例如192.168.1.100或者你的域名
+  -e VITE_API_URL= \
+  # APP_PORT -> 运行端口：例如3000（bridge模式时请与映射端口一致）
+  -e VITE_API_PORT= \
   # ACCOUNT -> 你的账号
   -e ACCOUNT= \
   # PASSWORD -> 你的密码
   -e PASSWORD= \
-  # APP_HOST -> 监听地址：0.0.0.0表示只监听IPv4；::表示监听IPv4和IPv6
-  -e APP_HOST=0.0.0.0 \
-  # VITE_API_URL -> 访问地址：服务器/NAS的地址，例如192.168.1.100或者你的域名
-  -e VITE_API_URL= \
-  # VITE_API_PORT -> 运行端口：例如3000（bridge模式时请与映射端口一致）
-  -e VITE_API_PORT= \
   # JWT_SECRET -> TOKEN加密密钥：用来给token加密的字符串
   -e JWT_SECRET= \
   # JWT_SECRET -> TOKEN过期时间：默认1200秒（20分钟）
   -e JWT_EXPIRE=1200 \
-  nas-tiktok:latest
+  asentimentalman/nas-tiktok:latest
 ```
 
 #### 补充说明
@@ -136,7 +155,7 @@ docker run -d \
 
 3. LAN_ONLY：只在 IPv4 环境起作用，且 `--network host` 时生效，因为只有绑定宿主机，dokcer 才能拿到真实的访问 IP，否则无法做出限制
 
-4. APP_HOST：如果设置为 `::` 表示开启 IPv6，如果拥有 IPv6 的环境，就需要关闭 `LAN_ONLY`，因为 IPv6 无法判断是不是局域网访问，会全部拦截
+4. IPv6：如果拥有 IPv6 环境并开启 IPv6 监听，就需要关闭 `LAN_ONLY`，因为无通过 IPv6 地址法判断是不是局域网访问，请求会全部拦截，导致无法访问
 
 ## 功能与建议
 
