@@ -115,12 +115,12 @@ deploy() {
     docker rm "$CONTAINER_NAME"
   fi
 
-  mkdir -p "$WORK_DIR/cert" "$WORK_DIR/statics"
+  mkdir -p "$WORK_DIR/certs" "$WORK_DIR/statics"
 
   echo -e "${BLUE}📦 创建容器 ${CONTAINER_NAME}...${NC}"
   docker create \
     --name "$CONTAINER_NAME" \
-    -v "$WORK_DIR/cert:/workspace/cert" \
+    -v "$WORK_DIR/certs:/workspace/certs" \
     -v "$WORK_DIR/statics:/workspace/statics" \
     --restart unless-stopped \
     "${IMAGE_NAME}:${TAG}"

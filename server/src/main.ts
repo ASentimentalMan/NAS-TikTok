@@ -14,8 +14,8 @@ const bootstrap = async () => {
   const fastifyOptions: Record<string, any> = {};
   if (process.env.SSL === 'true') {
     fastifyOptions.https = {
-      key: readFileSync('/workspace/cert/privkey.pem'),
-      cert: readFileSync('/workspace/cert/fullchain.pem'),
+      key: readFileSync('/workspace/certs/privkey.pem'),
+      cert: readFileSync('/workspace/certs/fullchain.pem'),
     };
     fastifyOptions.http2 = true;
   }

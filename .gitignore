@@ -29,6 +29,6 @@ coverage
 
 *.tsbuildinfo
 
-/cert
+/certs
 /server/statics
 *.tar

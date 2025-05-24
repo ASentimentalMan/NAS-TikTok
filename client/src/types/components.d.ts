@@ -16,7 +16,6 @@ declare module 'vue' {
     SimpleToast: typeof import('./../components/SimpleToast.vue')['default']
     SwiperContainer: typeof import('./../components/SwiperContainer.vue')['default']
     TabBar: typeof import('./../components/TabBar.vue')['default']
-    Tnmp: typeof import('./../components/tnmp.vue')['default']
     VideoPlayer: typeof import('./../components/VideoPlayer.vue')['default']
   }
 }
