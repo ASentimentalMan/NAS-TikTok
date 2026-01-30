@@ -128,14 +128,14 @@ docker run -d \
   -p port:port \
   # SSL -> Enable SSL: if enabled, certs folder and certificates must be provided
   -e SSL=false \
-  # LAN_ONLY -> Allow LAN-only access
-  -e LAN_ONLY=false \
+  # ALLOWED_IPS -> Allow IPs
+  -e ALLOWED_IPS= \
   # ACCOUNT -> Your account
   -e ACCOUNT= \
   # PASSWORD -> Your password
   -e PASSWORD= \
-  # IPv6 -> Listen address: 0.0.0.0 means listen only on IPv4; :: means listen on both IPv4 and IPv6
-  -e IPv6=false \
+  # ALLOW_IPv6 -> Listen address: 0.0.0.0 means listen only on IPv4; :: means listen on both IPv4 and IPv6
+  -e ALLOW_IPv6=false \
   # VITE_API_URL -> Access address: Server/NAS address, e.g., 192.168.1.100 or your domain
   -e VITE_API_URL= \
   # VITE_API_PORT -> Running port: e.g., 3000 (should match the mapped port in bridge mode)
@@ -153,9 +153,9 @@ docker run -d \
 
 2. SSL: If you have a domain, it's strongly recommended to enable it! This will encrypt your data traffic and protect your privacy. If you don't have a domain, it's advisable to limit access to LAN only.
 
-3. LAN_ONLY: Only works in an IPv4 environment and when --network host is used, because Docker can only get the real access IP when bound to the host, otherwise it cannot impose restrictions.
+3. ALLOWED_IPS: Only works when --network host is used, because Docker can only get the real access IP when bound to the host, otherwise it cannot impose restrictions.
 
-4. IPv6: If you have an IPv6 environment and enable IPv6 listening, you'll need to disable `LAN_ONLY`. This is because it's impossible to determine if a request is a local network access via an IPv6 address, and all requests would be blocked, leading to inaccessibility.
+4. ALLOW_IPv6: If you have an IPv6 environment and enable IPv6 listening, you are able to access this app via IPv6 address outside your local network.
 
 ## Features and Suggestions
 

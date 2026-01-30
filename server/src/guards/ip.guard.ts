@@ -1,4 +1,4 @@
-import { isLAN } from '@/utils/tool.utils';
+import { isAllowedIPs } from '@/utils/tool.utils';
 import {
   CanActivate,
   ExecutionContext,
@@ -11,22 +11,23 @@ import { APP_GUARD } from '@nestjs/core';
 import { FastifyRequest } from 'fastify';
 
 @Injectable()
-export class LANGuard implements CanActivate {
-  private readonly logger = new Logger(LANGuard.name, { timestamp: true });
+export class IPGuard implements CanActivate {
+  private readonly logger = new Logger(IPGuard.name, { timestamp: true });
 
   constructor(private readonly configService: ConfigService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const lanOnly = this.configService.get('server')?.lan;
-    if (lanOnly) {
+    const allowedIPs = this.configService.get('server')?.allowedIPs;
+    const allowIPv6 = this.configService.get('server')?.allowIPv6;
+    if (allowedIPs) {
       const request = context.switchToHttp().getRequest<
         FastifyRequest & {
           query: { auth?: string };
           jwt: Record<string, any>;
         }
       >();
-      const isFromLan = isLAN(request.ip);
-      if (!isFromLan) {
+      const isInAllowedIPs = isAllowedIPs(request.ip, allowedIPs, allowIPv6);
+      if (!isInAllowedIPs) {
         this.logger.log(`禁止访问 @ ${request.ip} `);
         throw new ForbiddenException(`禁止访问`);
       }
@@ -35,7 +36,7 @@ export class LANGuard implements CanActivate {
   }
 }
 
-export const LANProvider = {
+export const IPProvider = {
   provide: APP_GUARD,
-  useClass: LANGuard,
+  useClass: IPGuard,
 };

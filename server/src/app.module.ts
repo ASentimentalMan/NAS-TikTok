@@ -9,7 +9,7 @@ import { join } from 'path';
 import { AuthModule } from './modules/auth/auth.module';
 import { JWTConfig } from './configs/jwt.config';
 import { JWTProvider } from './guards/jwt.guard';
-import { LANProvider } from './guards/lan.guard';
+import { IPProvider } from './guards/ip.guard';
 
 @Module({
   imports: [
@@ -31,7 +31,7 @@ import { LANProvider } from './guards/lan.guard';
   controllers: [],
   providers: [
     JWTProvider,
-    LANProvider
+    IPProvider
   ],
 })
 export class AppModule {}

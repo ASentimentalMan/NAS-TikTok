@@ -128,10 +128,10 @@ docker run -d \
   -p port:port \
   # SSL -> 是否开启：如果开启的话必须提供certs文件夹及证书
   -e SSL=false \
-  # LAN_ONLY -> 是否只允许局域网访问
-  -e LAN_ONLY=false \
-    # IPv6 -> 是否开启IPv6：开启的话LAN_ONLY会失效
-  -e IPv6=false \
+  # ALLOW_IPv6 -> 是否开启IPv6
+  -e ALLOW_IPv6=false \
+  # ALLOWED_IPS -> 是否只允许局域网访问
+  -e ALLOWED_IPS=192.168.0.0/16,172.17.0.0/16 \
   # VITE_API_URL -> 访问地址：服务器/NAS的地址，例如192.168.1.100或者你的域名
   -e VITE_API_URL= \
   # APP_PORT -> 运行端口：例如3000（bridge模式时请与映射端口一致）
@@ -153,9 +153,9 @@ docker run -d \
 
 2. SSL：如果你有域名的话强烈建议开启！这将加密你的数据流量，起到保护隐私作用。如果没有域名，建议限制为只允许局域网访问
 
-3. LAN_ONLY：只在 IPv4 环境起作用，且 `--network host` 时生效，因为只有绑定宿主机，dokcer 才能拿到真实的访问 IP，否则无法做出限制
+3. ALLOWED_IPS 仅在 `--network host` 时生效，因为只有绑定宿主机，dokcer 才能拿到真实的访问 IP，否则无法做出限制
 
-4. IPv6：如果拥有 IPv6 环境并开启 IPv6 监听，就需要关闭 `LAN_ONLY`，因为无通过 IPv6 地址法判断是不是局域网访问，请求会全部拦截，导致无法访问
+4. ALLOW_IPv6：是否开启 IPv6 监听，开启后可以在局域网外通过IPv6公网访问
 
 ## 功能与建议
 
