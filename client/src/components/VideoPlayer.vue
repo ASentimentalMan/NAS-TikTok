@@ -162,20 +162,23 @@ const speedIndicatorComputedText = computed(() => {
 // --- 播放控制方法 ---
 const toastRef = ref();
 const play = async () => {
-  if (videoRef.value) {
-    // 注意: 移动端浏览器（尤其是 Safari）对自动播放有限制
-    // 通常需要设置 muted=true 或用户交互才能成功播放
-    // 处理 play() 返回的 Promise，捕获自动播放失败的情况
-    try {
-      await videoRef.value.play();
-      state.status = SlideItemPlayStatus.Play;
-      isLoading.value = false;
-    } catch (error) {
-      state.status = SlideItemPlayStatus.Stop;
-      isLoading.value = false;
-      isLoading.value = videoRef.value.readyState < 3; // Check if enough data is buffered to play
-      toastRef.value.show("播放被阻止，请点击继续");
-    }
+  const videoElement = videoRef.value;
+  if (!videoElement) return;
+
+  // 注意: 移动端浏览器（尤其是 Safari）对自动播放有限制
+  // 通常需要设置 muted=true 或用户交互才能成功播放
+  // 处理 play() 返回的 Promise，捕获自动播放失败的情况
+  try {
+    await videoElement.play();
+    if (videoRef.value !== videoElement) return;
+    state.status = SlideItemPlayStatus.Play;
+    isLoading.value = false;
+  } catch (error) {
+    if (videoRef.value !== videoElement) return;
+    state.status = SlideItemPlayStatus.Stop;
+    isLoading.value = false;
+    isLoading.value = videoElement.readyState < 3; // Check if enough data is buffered to play
+    toastRef.value?.show("播放被阻止，请点击继续");
   }
 };
 

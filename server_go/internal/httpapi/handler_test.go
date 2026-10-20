@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -145,6 +146,49 @@ func TestCookieLoginSessionListRangeAndLogout(t *testing.T) {
 	}
 	if response := invoke(handler, http.MethodGet, "/photos/api/session", nil, nil, "127.0.0.1:1234", cookies...); response.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked session status = %d", response.Code)
+	}
+}
+
+func TestListReturnsEmptyDataForEmptyCatalog(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	cookie := authenticatedCookie(t, handler)
+
+	response := invoke(handler, http.MethodGet, "/api/list?type=image", nil, nil, "127.0.0.1:1234", cookie)
+	if response.Code != http.StatusOK || response.Body.String() != "{\"data\":[]}\n" {
+		t.Fatalf("empty media list = %d %q, want 200 {\"data\":[]}", response.Code, response.Body.String())
+	}
+}
+
+func TestListReturnsServiceUnavailableWhenCatalogScanFails(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	cookie := authenticatedCookie(t, handler)
+	if err := handler.catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	response := invoke(handler, http.MethodGet, "/api/list?type=image", nil, nil, "127.0.0.1:1234", cookie)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed media scan status = %d body=%q, want 503", response.Code, response.Body.String())
+	}
+	var result map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result["message"] == "" {
+		t.Fatalf("failed media scan error body = %q, %v; want JSON message", response.Body.String(), err)
+	}
+}
+
+func TestListDoesNotWriteTemporaryFailureForCanceledRequest(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	cookie := authenticatedCookie(t, handler)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/list?type=image", nil).WithContext(ctx)
+	request.RemoteAddr = "127.0.0.1:1234"
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+	if response.Code == http.StatusServiceUnavailable || response.Body.Len() != 0 {
+		t.Fatalf("canceled list response = %d body=%q, want no response body and no 503 classification", response.Code, response.Body.String())
 	}
 }
 
@@ -385,6 +429,15 @@ func invoke(handler http.Handler, method, target string, body []byte, headers ht
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func authenticatedCookie(t *testing.T, handler *Handler) *http.Cookie {
+	t.Helper()
+	token, _, err := handler.sessions.Create("owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Cookie{Name: session.CookieName, Value: token}
 }
 
 func answerFromDataURI(t *testing.T, data string) string {

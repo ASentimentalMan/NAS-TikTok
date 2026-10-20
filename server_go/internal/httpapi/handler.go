@@ -222,8 +222,15 @@ func (handler *Handler) list(writer http.ResponseWriter, request *http.Request, 
 		return
 	}
 	items, err := handler.catalog.List(request.Context(), mediaType)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("media scan incomplete type=%s", mediaType)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("media scan failed type=%s: %v", mediaType, err)
+		}
+		writeError(writer, http.StatusServiceUnavailable, "媒体列表暂时不可用")
+		return
 	}
 	urls := make([]string, 0, len(items))
 	for _, item := range items {

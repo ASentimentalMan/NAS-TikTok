@@ -11,6 +11,20 @@ import (
 	"testing"
 )
 
+type cancelAfterContextChecks struct {
+	context.Context
+	cancel context.CancelFunc
+	checks int
+}
+
+func (ctx *cancelAfterContextChecks) Err() error {
+	ctx.checks++
+	if ctx.checks == 2 {
+		ctx.cancel()
+	}
+	return ctx.Context.Err()
+}
+
 func TestListRecursesFiltersAndSkipsNASMetadata(t *testing.T) {
 	root := t.TempDir()
 	for name, body := range map[string]string{
@@ -168,6 +182,75 @@ func TestListHandlesEmptyCanceledAndConcurrentScans(t *testing.T) {
 		}()
 	}
 	group.Wait()
+}
+
+func TestListReportsRootScanFailure(t *testing.T) {
+	catalog, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := catalog.List(context.Background(), "image"); !errors.Is(err, ErrRootScan) {
+		t.Fatalf("list after root scan failure error = %v, want ErrRootScan", err)
+	}
+}
+
+func TestListReportsPartialChildDirectoryFailure(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "unreadable")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root.jpg"), []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "child.jpg"), []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(child, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(child, 0o700) })
+	if _, err := os.ReadDir(child); err == nil {
+		t.Skip("process can still read mode-000 directories")
+	}
+
+	catalog, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	items, err := catalog.List(context.Background(), "image")
+	if !errors.Is(err, ErrPartialScan) {
+		t.Fatalf("list with unreadable child error = %v, want ErrPartialScan", err)
+	}
+	if len(items) != 1 || items[0] != "root.jpg" {
+		t.Fatalf("partial scan items = %v, want root.jpg", items)
+	}
+}
+
+func TestListPreservesCancellationDuringDirectoryRead(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	base, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &cancelAfterContextChecks{Context: base, cancel: cancel}
+	_, err = catalog.List(ctx, "image")
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrRootScan) || errors.Is(err, ErrPartialScan) {
+		t.Fatalf("list cancellation error = %v, want context.Canceled without scan failure classification", err)
+	}
 }
 
 func TestListSkipsSymlinkDirectories(t *testing.T) {

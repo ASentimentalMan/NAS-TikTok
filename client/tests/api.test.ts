@@ -59,7 +59,11 @@ describe("cookie-auth API requests", () => {
     localStorage.setItem("token", "stale-token");
     vi.mocked(fetch).mockResolvedValue(response(401, { message: "需要登录" }));
 
-    await expect(captcha()).rejects.toThrow("需要登录");
+    await expect(captcha()).rejects.toMatchObject({
+      message: "需要登录",
+      status: 401,
+      retryable: false,
+    });
 
     expect(localStorage.getItem("token")).toBeNull();
     expect(routerMock.replace).toHaveBeenCalledWith({
@@ -68,12 +72,24 @@ describe("cookie-auth API requests", () => {
     });
   });
 
+  it.each([429, 500, 503])("marks API %i as retryable", async (status) => {
+    vi.mocked(fetch).mockResolvedValue(response(status, { message: "temporary failure" }));
+
+    await expect(captcha()).rejects.toMatchObject({ status, retryable: true });
+  });
+
+  it("does not mark permanent client errors as retryable", async () => {
+    vi.mocked(fetch).mockResolvedValue(response(403, { message: "forbidden" }));
+
+    await expect(captcha()).rejects.toMatchObject({ status: 403, retryable: false });
+  });
+
   it("keeps the local session marker on network errors", async () => {
     localStorage.setItem("token", "legacy-marker");
     vi.mocked(fetch).mockRejectedValue(new TypeError("offline"));
 
     await expect(checkSession()).resolves.toBe("unavailable");
-    await expect(captcha()).rejects.toThrow("offline");
+    await expect(captcha()).rejects.toMatchObject({ message: "offline", retryable: true });
 
     expect(localStorage.getItem("token")).toBe("legacy-marker");
     expect(routerMock.replace).not.toHaveBeenCalled();

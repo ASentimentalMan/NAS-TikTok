@@ -63,6 +63,9 @@ const pendingUntilAbort = (signal?: AbortSignal) =>
       { once: true }
     );
   });
+const flushMicrotasks = async () => {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+};
 
 describe("media feed request lifecycle", () => {
   beforeEach(() => {
@@ -71,6 +74,7 @@ describe("media feed request lifecycle", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -123,5 +127,83 @@ describe("media feed request lifecycle", () => {
     wrapper.unmount();
     expect(signal?.aborted).toBe(true);
     await flushPromises();
+  });
+
+  it.each([
+    ["images", Images, fetchImageListMock],
+    ["videos", Videos, fetchVideoListMock],
+  ] as const)("recovers %s after an initial transient request failure", async (_name, component, fetchMock) => {
+    vi.useFakeTimers();
+    fetchMock
+      .mockRejectedValueOnce(Object.assign(new Error("temporary failure"), { retryable: true }))
+      .mockResolvedValueOnce(items(["/recovered.media"]));
+    const wrapper = mount(component);
+    await flushMicrotasks();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    await wrapper.vm.$nextTick();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["images", Images, fetchImageListMock],
+    ["videos", Videos, fetchVideoListMock],
+  ] as const)("retries an empty %s result and loads later items", async (_name, component, fetchMock) => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValueOnce(items([])).mockResolvedValueOnce(items(["/later.media"]));
+    const wrapper = mount(component);
+    await flushMicrotasks();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    await wrapper.vm.$nextTick();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["images", Images, fetchImageListMock],
+    ["videos", Videos, fetchVideoListMock],
+  ] as const)("cancels a pending %s retry on unmount", async (_name, component, fetchMock) => {
+    vi.useFakeTimers();
+    fetchMock.mockRejectedValueOnce(
+      Object.assign(new Error("temporary failure"), { retryable: true })
+    );
+    const wrapper = mount(component);
+    await flushMicrotasks();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["images", Images, fetchImageListMock],
+    ["videos", Videos, fetchVideoListMock],
+  ] as const)("does not retry %s after an unauthorized response", async (_name, component, fetchMock) => {
+    vi.useFakeTimers();
+    fetchMock.mockRejectedValueOnce(
+      Object.assign(new Error("unauthorized"), { status: 401, retryable: false })
+    );
+    const wrapper = mount(component);
+    await flushMicrotasks();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
   });
 });

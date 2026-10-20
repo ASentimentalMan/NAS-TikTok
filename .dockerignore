@@ -37,3 +37,4 @@ docs/
 
 # 忽略资源
 server/statics/
+/statics/

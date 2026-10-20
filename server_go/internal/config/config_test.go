@@ -34,6 +34,41 @@ func TestFromLookupUsesRelativeSameOriginAPIByDefault(t *testing.T) {
 	}
 }
 
+func TestFromLookupSelectsDefaultListenHostFromIPv6Setting(t *testing.T) {
+	values := map[string]string{
+		"ACCOUNT": "owner", "PASSWORD": "pw", "JWT_SECRET": strings.Repeat("k", 32),
+	}
+	cfg, err := FromLookup(lookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowIPv6 || cfg.ListenHost != "0.0.0.0" {
+		t.Fatalf("default listen config = IPv6:%t host:%q, want false and 0.0.0.0", cfg.AllowIPv6, cfg.ListenHost)
+	}
+
+	values["ALLOW_IPv6"] = "true"
+	cfg, err = FromLookup(lookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowIPv6 || cfg.ListenHost != "::" {
+		t.Fatalf("IPv6 listen config = IPv6:%t host:%q, want true and ::", cfg.AllowIPv6, cfg.ListenHost)
+	}
+}
+
+func TestFromLookupPreservesExplicitListenHostWhenIPv6IsEnabled(t *testing.T) {
+	cfg, err := FromLookup(lookup(map[string]string{
+		"ACCOUNT": "owner", "PASSWORD": "pw", "JWT_SECRET": strings.Repeat("k", 32),
+		"ALLOW_IPv6": "true", "LISTEN_HOST": "127.0.0.1",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowIPv6 || cfg.ListenHost != "127.0.0.1" {
+		t.Fatalf("explicit listen config = IPv6:%t host:%q, want true and 127.0.0.1", cfg.AllowIPv6, cfg.ListenHost)
+	}
+}
+
 func TestFromLookupPreservesCredentialWhitespaceAndNormalizesOrigins(t *testing.T) {
 	cfg, err := FromLookup(lookup(map[string]string{
 		"ACCOUNT": " owner ", "PASSWORD": "  test password  ", "JWT_SECRET": strings.Repeat("k", 32),

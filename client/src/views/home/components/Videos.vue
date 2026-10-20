@@ -37,21 +37,38 @@ const videos = ref([]);
 const swiperInstance = ref(null);
 const isFetching = ref(false);
 let activeRequest = null;
+let retryTimer = null;
 let retryAt = 0;
 let consecutiveFailures = 0;
-let duplicateBatches = 0;
+let isUnmounted = false;
+
+const clearRetry = () => {
+  if (retryTimer !== null) clearTimeout(retryTimer);
+  retryTimer = null;
+};
+
+const scheduleRetry = () => {
+  consecutiveFailures += 1;
+  const delay = Math.min(1000 * 2 ** (consecutiveFailures - 1), 30000);
+  retryAt = Date.now() + delay;
+  clearRetry();
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    if (!isUnmounted) void fetchData();
+  }, delay);
+};
 // playingIndex 和 isPlaying 状态现在主要由 Swiper 的 activeIndex 驱动
 // 如果需要全局的播放状态，可以根据 swiperInstance?.activeIndex 来判断
 // 加载视频数据的方法
 const fetchData = async () => {
-  if (isFetching.value || Date.now() < retryAt) return;
+  if (isUnmounted || isFetching.value || Date.now() < retryAt) return;
 
   const controller = new AbortController();
   activeRequest = controller;
   isFetching.value = true;
   try {
     const response = await fetchVideoList(controller.signal);
-    consecutiveFailures = 0;
+    if (controller.signal.aborted || isUnmounted) return;
     const list = response.data;
     if (list && list.length > 0) {
       const existingURLs = new Set(videos.value.map((video) => video.url));
@@ -63,7 +80,7 @@ const fetchData = async () => {
 
       if (newList.length > 0) {
         consecutiveFailures = 0;
-        duplicateBatches = 0;
+        clearRetry();
         retryAt = 0;
         const activeIndex = swiperInstance.value?.activeIndex ?? 0;
         const combined = videos.value.concat(newList);
@@ -74,6 +91,7 @@ const fetchData = async () => {
         // 通知 Swiper Virtual 模块数据已更新
         await nextTick();
         if (
+          !isUnmounted &&
           swiperInstance.value &&
           swiperInstance.value.virtual &&
           !swiperInstance.value.destroyed
@@ -86,19 +104,20 @@ const fetchData = async () => {
           console.log("Swiper virtual updated");
         }
       } else {
-        duplicateBatches += 1;
-        retryAt =
-          Date.now() + Math.min(1000 * 2 ** (duplicateBatches - 1), 30000);
+        scheduleRetry();
       }
     } else {
       console.log("No more data to load.");
-      retryAt = Number.POSITIVE_INFINITY;
+      scheduleRetry();
     }
   } catch (error) {
-    if (!controller.signal.aborted) {
-      consecutiveFailures += 1;
-      retryAt =
-        Date.now() + Math.min(1000 * 2 ** (consecutiveFailures - 1), 30000);
+    if (!controller.signal.aborted && !isUnmounted) {
+      if (error?.retryable === true) {
+        scheduleRetry();
+      } else {
+        clearRetry();
+        retryAt = Number.POSITIVE_INFINITY;
+      }
       console.error("Error loading more videos:", error);
     }
   } finally {
@@ -151,6 +170,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  isUnmounted = true;
+  clearRetry();
   activeRequest?.abort();
 });
 </script>

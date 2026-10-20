@@ -65,6 +65,7 @@ wait_for_healthy() {
 rollback_deployment() {
   local candidate_name=$1 previous_name=$2 candidate_renamed=$3 previous_moved=$4 previous_was_running=$5
   local failed_name=$candidate_name rollback_failed=0 status
+  trap '' INT TERM HUP QUIT
   [[ "$candidate_renamed" == "true" ]] && failed_name=$CONTAINER_NAME
 
   if docker inspect "$failed_name" &>/dev/null; then
@@ -92,6 +93,24 @@ rollback_deployment() {
   fi
   echo -e "${RED}❌ 自动恢复未能完整完成。请检查容器 '$CONTAINER_NAME' 与 '$previous_name' 的状态${NC}" >&2
   return 1
+}
+
+handle_deploy_signal() {
+  local candidate_name=$1 previous_name=$2 candidate_renamed=$3 previous_moved=$4 previous_was_running=$5
+  local old_container_exists=$6 exit_status=$7
+
+  # Docker may complete a rename just before Bash runs the following flag assignment.
+  if docker inspect "$previous_name" &>/dev/null; then
+    previous_moved=true
+    if docker inspect "$CONTAINER_NAME" &>/dev/null; then
+      candidate_renamed=true
+    fi
+  elif [[ "$old_container_exists" == "false" ]] && docker inspect "$CONTAINER_NAME" &>/dev/null; then
+    candidate_renamed=true
+  fi
+
+  rollback_deployment "$candidate_name" "$previous_name" "$candidate_renamed" "$previous_moved" "$previous_was_running" || true
+  exit "$exit_status"
 }
 
 build() {
@@ -252,6 +271,10 @@ deploy() {
   fi
 
   echo -e "${BLUE}📦 预创建候选 Go 容器 ${candidate_name} (${network_mode})...${NC}"
+  trap 'handle_deploy_signal "$candidate_name" "$previous_name" "$candidate_renamed" "$previous_moved" "$old_was_running" "$old_container_exists" 129' HUP
+  trap 'handle_deploy_signal "$candidate_name" "$previous_name" "$candidate_renamed" "$previous_moved" "$old_was_running" "$old_container_exists" 130' INT
+  trap 'handle_deploy_signal "$candidate_name" "$previous_name" "$candidate_renamed" "$previous_moved" "$old_was_running" "$old_container_exists" 131' QUIT
+  trap 'handle_deploy_signal "$candidate_name" "$previous_name" "$candidate_renamed" "$previous_moved" "$old_was_running" "$old_container_exists" 143' TERM
   if ! docker create \
     --name "$candidate_name" \
     --env-file "$ENV_FILE" \
@@ -298,6 +321,8 @@ deploy() {
     rollback_deployment "$candidate_name" "$previous_name" "$candidate_renamed" "$previous_moved" "$old_was_running" || true
     exit 1
   fi
+
+  trap - INT TERM HUP QUIT
 
   if [[ "$previous_moved" == "true" ]]; then
     if docker rm "$previous_name" >/dev/null; then

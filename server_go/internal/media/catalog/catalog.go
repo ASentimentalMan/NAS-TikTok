@@ -20,6 +20,8 @@ var (
 	ErrInvalidType = errors.New("media type must be image or video")
 	ErrUnsafePath  = errors.New("invalid media path")
 	ErrUnsupported = errors.New("unsupported media file")
+	ErrRootScan    = errors.New("media root could not be scanned")
+	ErrPartialScan = errors.New("media scan was incomplete")
 )
 
 var imageExtensions = map[string]struct{}{
@@ -132,8 +134,11 @@ func (catalog *Catalog) List(ctx context.Context, mediaType string) ([]string, e
 		}
 		subdirectories, err := readDirectory(directory)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			if directory == "." {
-				return fmt.Errorf("read media root: %w", err)
+				return fmt.Errorf("%w: %w", ErrRootScan, err)
 			}
 			partial = true
 		}
@@ -148,8 +153,11 @@ func (catalog *Catalog) List(ctx context.Context, mediaType string) ([]string, e
 	if err := walk("."); err != nil {
 		return selected.Items(), err
 	}
+	if err := ctx.Err(); err != nil {
+		return selected.Items(), err
+	}
 	if partial {
-		return selected.Items(), errors.New("one or more media directories could not be read")
+		return selected.Items(), ErrPartialScan
 	}
 	return selected.Items(), nil
 }

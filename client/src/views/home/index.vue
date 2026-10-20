@@ -28,6 +28,7 @@ let restoreTransitionFrame = null;
 
 const onSwiperInitialized = (swiper) => {
   swiperInstance.value = swiper;
+  activeTabIndex.value = swiper.activeIndex;
   nextTick(() => {
     updateUnderline(false);
   });

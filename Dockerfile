@@ -29,7 +29,6 @@ RUN apk add --no-cache curl && \
 WORKDIR /workspace
 
 ENV APP_NAME=NAS-TikTok \
-    LISTEN_HOST=0.0.0.0 \
     LISTEN_PORT=3000 \
     SSL=false \
     ALLOW_IPv6=false \

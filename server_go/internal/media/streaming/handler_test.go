@@ -1,6 +1,9 @@
 package streaming
 
 import (
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -108,7 +111,7 @@ func TestServeContentHandlesRangeVariants(t *testing.T) {
 	}
 }
 
-func TestServeContentIgnoresMultipleRanges(t *testing.T) {
+func TestServeContentMultipleRangesFollowGoCompatibilitySetting(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "video.mp4"), []byte("0123456789"), 0o600); err != nil {
 		t.Fatal(err)
@@ -123,7 +126,50 @@ func TestServeContentIgnoresMultipleRanges(t *testing.T) {
 	request.Header.Set("Range", "bytes=0-1,4-5")
 	response := httptest.NewRecorder()
 	New(media).ServeHTTP(response, request, "video.mp4")
-	if response.Code != 200 || response.Body.String() != "0123456789" || response.Header().Get("Content-Range") != "" {
-		t.Fatalf("unsupported multiple range response = %d body=%q Content-Range=%q", response.Code, response.Body.String(), response.Header().Get("Content-Range"))
+	switch response.Code {
+	case 200:
+		if response.Body.String() != "0123456789" || response.Header().Get("Content-Range") != "" {
+			t.Fatalf("multiple range full response = body %q Content-Range=%q, want complete content without Content-Range", response.Body.String(), response.Header().Get("Content-Range"))
+		}
+		return
+	case 206:
+		if response.Header().Get("Content-Range") != "" {
+			t.Fatalf("multiple range response has top-level Content-Range=%q", response.Header().Get("Content-Range"))
+		}
+	default:
+		t.Fatalf("multiple range response status = %d, want 200 or 206", response.Code)
+	}
+	mediaType, params, err := mime.ParseMediaType(response.Header().Get("Content-Type"))
+	if err != nil || mediaType != "multipart/byteranges" || params["boundary"] == "" {
+		t.Fatalf("multiple range Content-Type = %q, %v; want multipart/byteranges with boundary", response.Header().Get("Content-Type"), err)
+	}
+
+	reader := multipart.NewReader(response.Body, params["boundary"])
+	wantRanges := []struct {
+		contentRange string
+		body         string
+	}{
+		{contentRange: "bytes 0-1/10", body: "01"},
+		{contentRange: "bytes 4-5/10", body: "45"},
+	}
+	for index, want := range wantRanges {
+		part, err := reader.NextPart()
+		if err != nil {
+			t.Fatalf("multipart range %d: %v", index, err)
+		}
+		body, err := io.ReadAll(part)
+		if err != nil {
+			t.Fatalf("read multipart range %d: %v", index, err)
+		}
+		if got := part.Header.Get("Content-Range"); got != want.contentRange || string(body) != want.body {
+			t.Fatalf("multipart range %d = Content-Range %q body %q, want %q body %q", index, got, body, want.contentRange, want.body)
+		}
+	}
+	if part, err := reader.NextPart(); err != io.EOF {
+		if err != nil {
+			t.Fatalf("read extra multipart range: %v", err)
+		}
+		body, readErr := io.ReadAll(part)
+		t.Fatalf("unexpected extra multipart range Content-Range=%q body=%q read error=%v", part.Header.Get("Content-Range"), body, readErr)
 	}
 }

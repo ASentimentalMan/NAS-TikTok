@@ -31,4 +31,5 @@ coverage
 
 /certs
 /server/statics
+/statics/
 *.tar

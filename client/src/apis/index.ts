@@ -5,6 +5,17 @@ const apiBase = () => {
   return (configured || "/api").replace(/\/$/, "");
 };
 
+class APIRequestError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly status?: number
+  ) {
+    super(message);
+    this.name = "APIRequestError";
+  }
+}
+
 const redirectToLogin = () => {
   localStorage.removeItem("token");
   if (router.currentRoute.value.name !== "login") {
@@ -13,15 +24,29 @@ const redirectToLogin = () => {
 };
 
 const requestJSON = async (path: string, options: RequestInit = {}) => {
-  const response = await fetch(`${apiBase()}${path}`, {
-    ...options,
-    credentials: "include",
-    headers: { ...options.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase()}${path}`, {
+      ...options,
+      credentials: "include",
+      headers: { ...options.headers },
+    });
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw new APIRequestError(
+      error instanceof Error ? error.message : "Network request failed",
+      true
+    );
+  }
+
   const result = await response.json().catch(() => ({}));
   if (response.status === 401) redirectToLogin();
   if (!response.ok) {
-    throw new Error(result.message || `请求失败 (${response.status})`);
+    throw new APIRequestError(
+      result.message || `请求失败 (${response.status})`,
+      response.status === 429 || response.status >= 500,
+      response.status
+    );
   }
   return result;
 };
