@@ -1,5 +1,6 @@
 <script setup>
 import { Icon } from "@iconify/vue";
+import SimpleToast from "@/components/SimpleToast.vue";
 import RefreshIcon from "@/assets/imgs/refresh.png";
 const router = useRouter();
 
@@ -9,10 +10,10 @@ const props = defineProps({
     required: true,
   },
 });
-const token = computed(() => localStorage.getItem("token"));
-
 const imageRef = ref(null);
 const containerRef = ref(null);
+const toastRef = ref(null);
+let imageRetryCount = 0;
 
 // 工具按钮相关状态
 const touched = ref(false);
@@ -323,6 +324,7 @@ const handleWindowResize = () => {
 
 // 图片加载完成处理
 const onImageload = () => {
+  imageRetryCount = 0;
   updateContainerDimensions();
   updateimageOriginalDimensions();
   // 图片加载完成后，确保重置缩放和位置
@@ -332,15 +334,34 @@ const onImageload = () => {
 // 图片加载错误处理
 const handleImageError = async () => {
   try {
-    const response = await fetch(`${props.image.url}?auth=${token.value}`, {
+    const response = await fetch(props.image.url, {
       method: "HEAD",
+      credentials: "include",
     });
     if (response.status === 401) {
       localStorage.removeItem("token");
       router.replace("/login");
+      return;
     }
-  } catch (error) {
-    console.error("检查图片 token 失败:", error);
+    if (response.ok && imageRetryCount === 0 && imageRef.value) {
+      const imageElement = imageRef.value;
+      imageRetryCount += 1;
+      imageElement.removeAttribute("src");
+      await nextTick();
+      if (imageRef.value === imageElement) imageElement.src = props.image.url;
+      return;
+    }
+    const messages = {
+      403: "无权访问该图片",
+      404: "图片文件不存在",
+      416: "图片范围请求无效",
+    };
+    toastRef.value?.show(
+      messages[response.status] ||
+        (response.ok ? "图片加载失败，格式可能不受支持" : "图片服务暂不可用")
+    );
+  } catch {
+    toastRef.value?.show("图片网络异常，请检查连接后重试");
   }
 };
 
@@ -763,6 +784,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (touchedTimeout.value) {
+    clearTimeout(touchedTimeout.value);
+    touchedTimeout.value = null;
+  }
   // Clean up states
   rotationAngle.value = 0; // Resetting angle on unmount is fine
   resetZoom(); // Also resets pinch/drag states
@@ -834,7 +859,8 @@ watch(
   >
     <img
       ref="imageRef"
-      :src="`${props.image.url}?auth=${token}`"
+      crossorigin="use-credentials"
+      :src="props.image.url"
       @load="onImageload"
       :style="{
         transform: `translate(${imageTranslateX}px, ${imageTranslateY}px) scale(${currentAppliedScale}) rotate(${rotationAngle}deg)`,
@@ -877,6 +903,7 @@ watch(
         @click.stop="toggleAutoplay"
       />
     </div>
+    <SimpleToast ref="toastRef" />
   </div>
 </template>
 

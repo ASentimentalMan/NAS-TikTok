@@ -1,8 +1,8 @@
 # 忽略所有隐藏文件和文件夹（如 .git, .vscode）
 .*
-# 但保留 .env 和 .env.production（需手动放行）
-!.env
-!.env.production
+# 排除仓库根目录及所有子目录中的环境变量文件
+.env*
+**/.env*
 
 # 忽略 node_modules（依赖由 Dockerfile 内 npm install 生成）
 client/node_modules/

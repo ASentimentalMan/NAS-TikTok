@@ -9,7 +9,7 @@
 <p align="center">
 <a><img src="https://img.shields.io/badge/license-GPLv3-orange"/></a>
 <a><img src="https://img.shields.io/badge/PRs-welcome-brightgreen"/></a>
-<a><img src="https://img.shields.io/badge/Powered%20by-NestJS-blue"/></a>
+<a><img src="https://img.shields.io/badge/Powered%20by-Go-blue"/></a>
 <a><img src="https://img.shields.io/badge/Powered%20by-Vue.js-blue"/></a>
 
 </p>
@@ -18,17 +18,15 @@
 
 ## 技术栈
 
-### 后端 NestJS
+### 后端 Go
 
-1. 负责 AUTH 鉴权
+1. 提供单进程 API、登录鉴权、验证码和媒体流服务。
 
-2. 对资源库进行水库抽样（无数据库/无缓存）
+2. 对资源库进行水库抽样（无数据库/无缓存）。
 
-3. 支持 HTTPS HTTP2（需自备域名/证书）
+3. 可配置 HTTP 或 HTTPS；HTTPS 需要自备证书。
 
-4. 支持只允许局域网访问（docker 需要 host 模式）
-
-5. 支持客户端 IP 绑定（即使 URL 泄露，IP 不一样也无法查看）
+4. 支持配置 IP 白名单和 IPv6 监听。
 
 ### 前端 Vue.js
 
@@ -52,31 +50,45 @@
 
 ## 运行
 
-注意：本项目仅适用于学习和研究，不得用于商业使用
+注意：本项目仅适用于学习和研究，不得用于商业使用。
 
 ### 本地开发
 
 ---
 
+本项目的后端由 Go 提供。Node.js/npm 只用于运行 Vue 前端开发服务器。需要 Go 1.24 或更新版本，以及 Node.js 22.23.3（与项目 CI 使用的版本一致）。
+
+先克隆项目并创建媒体目录：
+
 ```bash
-git clone https://github.com/ASentimentalMan/NASTikTok
-cd NASTikTok
+git clone https://github.com/ASentimentalMan/NAS-TikTok.git
+cd NAS-TikTok
+mkdir -p statics
+```
 
-# 创建媒体文件夹，把测试的资源放到里面
-mkdir NASTikTok/statics
+将要浏览的视频和图片放入 `statics/`。在项目根目录打开第一个终端，启动 Go 后端；保持该终端运行：
 
-# 后端
-cd NASTikTok/server
-npm install
-npm run dev
+```bash
+cd server_go
+ACCOUNT=demo \
+PASSWORD=change-me \
+JWT_SECRET='local-development-only-secret-replace-before-sharing' \
+LISTEN_PORT=3000 \
+MEDIA_ROOT=../statics \
+go run ./cmd/nas-tiktok
+```
 
-# 前端
-cd NASTikTok/client
-npm install
+在项目根目录另开第二个终端，启动前端：
+
+```bash
+cd client
+npm ci
 npm run dev
 ```
 
-打开浏览器并访问: [http://127.0.0.1:3000](http://127.0.0.1:3000)
+Vite 会把 `/api` 请求转发到后端。打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)，使用账号 `demo`、密码 `change-me` 登录。若终端没有从项目根目录启动，请先切换到克隆出的 `NAS-TikTok` 目录。示例密钥仅用于本机开发；共享或部署前请换成至少 32 字节的随机密钥，不要提交真实凭据。
+
+Go 服务常用配置：`LISTEN_HOST`（默认 `0.0.0.0`）、`LISTEN_PORT`（默认 `3000`，未设置时也可由 `VITE_API_PORT` 提供）、`MEDIA_ROOT`（默认 `server/statics`）、`STATIC_ROOT`（默认 `client/dist`）、`APP_URL_PREFIX`（可选部署路径）、`API_BASE`（可选前端 API 基址，默认同源 `/api`）、`SSL`（默认 `false`）、`TLS_CERT_FILE` 和 `TLS_KEY_FILE`（HTTPS 证书路径，默认 `certs/fullchain.pem` 与 `certs/privkey.pem`）、`ALLOWED_IPS`、`ALLOW_IPv6`、`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 与 `JWT_EXPIRE`（默认 1200 秒）。`MEDIA_ROOT` 和 `STATIC_ROOT` 的相对默认路径以 Go 进程的当前工作目录为基准；启动时会解析为绝对路径。本地示例从 `server_go/` 启动，因此显式把媒体目录设为 `../statics`；若由 Go 服务托管前端，默认静态目录会是 `server_go/client/dist`。Docker 镜像已将这两个目录设为绝对路径。`COOKIE_SAME_SITE` 默认 `lax`，`COOKIE_SECURE` 默认跟随 `SSL`。跨站 Cookie 需要在 `CORS_ORIGINS` 中列出前端来源，并设置 `COOKIE_SAME_SITE=none`、`COOKIE_SECURE=true`；浏览器跨站使用还需要 HTTPS。只有配置了 `TRUSTED_PROXIES` 的代理网段，服务才会信任代理转发的客户端 IP 头。`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 必须在运行时配置；签名密钥至少 32 字节。启用 HTTPS 时，证书和私钥必须可读。根路径部署无需额外配置；部署到子路径时，运行时设置 `APP_URL_PREFIX`，构建时设置匹配的 `VITE_BASE_URL`（例如 `/photos/`）。
 
 ### 正式部署
 
@@ -89,73 +101,24 @@ npm run dev
 ├── certs/ # 证书文件
 │   ├── fullchain.pem # 证书
 │   └── privkey.pem # 私钥
-├── static/ # 资源目录
-├── server/
-│   └── ...
-└── client/
-    └── ...
+├── statics/ # 只读媒体目录
+└── client/dist/ # Docker 构建阶段生成的 Vue 静态文件
+/usr/local/bin/nas-tiktok # Go 单进程服务
 ```
 
-#### 在线拉取
+#### 本地构建与部署
 
 ```bash
-# 拉取docker镜像
-docker pull asentimentalman/nas-tiktok:latest
+docker build -t nas-tiktok:local .
 ```
 
-#### 本地构建
+`Dockerfile` 在构建阶段用 Node.js 生成 Vue `client/dist`，再用 Go 1.24 构建后端；最终镜像由 Go 进程同时提供 API 和前端静态文件，不包含 NestJS、Node.js 运行时或 PM2。账号、密码和 JWT 密钥通过运行时环境提供，不复制进最终镜像。该构建流程尚未在 Docker 中验证。
 
-```bash
-# 创建docker镜像
-docker build -t nas-tiktok .
+`build.sh` 从脚本所在的当前 Git 工作区构建，不会拉取或切换分支；镜像会记录源码 Commit，工作区有未提交改动时标记为 `dirty`。部署前在 `$HOME/workspace/pm2/NAS-TikTok/.env` 创建 Docker `KEY=value` 格式的运行时配置文件，至少填入 `ACCOUNT`、`PASSWORD` 和不少于 32 字节的 `JWT_SECRET`。需要 HTTPS 时设置 `SSL=true`，并将 `fullchain.pem` 与 `privkey.pem` 放在同目录的 `certs/` 下；媒体放入 `statics/`。根路径部署无需额外设置；子路径部署还需在运行时 `.env` 中设置 `APP_URL_PREFIX=photos`，并以 `VITE_BASE_URL=/photos/ bash ./build.sh` 构建匹配的前端。运行 `bash ./build.sh` 后选择构建、部署或构建并部署。部署会让你选择 `host` 或 `bridge` 网络和服务端口；若没有旧容器且系统提供 `ss`，脚本会先尽力检查 TCP 端口是否已被本机进程占用，Docker 启动阶段仍可能发现端口冲突。它会询问 `.env` 是否启用 HTTPS；若使用默认证书路径，会检查证书和私钥文件存在、非空且当前用户可读，自定义路径则由容器启动健康检查验证。媒体与证书目录以只读方式挂载。脚本先创建候选容器，启动后等待最多 90 秒的容器内 loopback 健康检查；只有健康后才移除旧容器，失败时会尝试恢复旧容器原先的运行状态。健康检查访问 `APP_URL_PREFIX` 下的 `/healthz`，HTTPS 探测会跳过本地证书信任校验。Docker 部署尚未验证。
 
-# 如果NAS不能运行dockerfile，请电脑build导出后再导入NAS进行启动
-docker save -o nas-tiktok.tar nas-tiktok
-```
+`host` 网络下服务直接监听 NAS 端口；`bridge` 网络下脚本会发布所选端口。Bridge 网络通常只能看到 Docker 网桥一侧的来源地址；若需通过反向代理识别客户端 IP，请按实际拓扑配置可信代理。容器的默认 `ALLOWED_IPS` 为 `192.168.0.0/16,172.17.0.0/16`，部署到其他网段时应在 `.env` 中调整。
 
-#### Docker 启动命令
-
-```bash
-# 启动参数说明
-docker run -d \
-  --name nas-tiktok \
-  # /certs -> 证书文件夹：需包含有效的 fullchain.pem 和 privkey.pem
-  -v /certs:/workspace/certs \
-  # /source -> 资源文件夹：需要被浏览的资源映射到这里
-  -v /source:/workspace/statics \
-  # port -> 映射端口：bridge模式才需要
-  # bridge模式下docker无法拿到真实IP，更换IP退出与只能局域网访问功能将不可用
-  -p port:port \
-  # SSL -> 是否开启：如果开启的话必须提供certs文件夹及证书
-  -e SSL=false \
-  # ALLOW_IPv6 -> 是否开启IPv6
-  -e ALLOW_IPv6=false \
-  # ALLOWED_IPS -> 是否只允许局域网访问
-  -e ALLOWED_IPS=192.168.0.0/16,172.17.0.0/16 \
-  # VITE_API_URL -> 访问地址：服务器/NAS的地址，例如192.168.1.100或者你的域名
-  -e VITE_API_URL= \
-  # APP_PORT -> 运行端口：例如3000（bridge模式时请与映射端口一致）
-  -e VITE_API_PORT= \
-  # ACCOUNT -> 你的账号
-  -e ACCOUNT= \
-  # PASSWORD -> 你的密码
-  -e PASSWORD= \
-  # JWT_SECRET -> TOKEN加密密钥：用来给token加密的字符串
-  -e JWT_SECRET= \
-  # JWT_SECRET -> TOKEN过期时间：默认1200秒（20分钟）
-  -e JWT_EXPIRE=1200 \
-  asentimentalman/nas-tiktok:latest
-```
-
-#### 补充说明
-
-1. 本项目拥有 IP 变化下线和只允许局域网访问功能，建议跑在 docker 的--network host 模式，因为该模式才能拿到客户端 IP，否则这 2 项功能将失效
-
-2. SSL：如果你有域名的话强烈建议开启！这将加密你的数据流量，起到保护隐私作用。如果没有域名，建议限制为只允许局域网访问
-
-3. ALLOWED_IPS 仅在 `--network host` 时生效，因为只有绑定宿主机，dokcer 才能拿到真实的访问 IP，否则无法做出限制
-
-4. ALLOW_IPv6：是否开启 IPv6 监听，开启后可以在局域网外通过IPv6公网访问
+如需在另一台 NAS 上离线启动，可在构建机上使用 `docker save` 导出镜像，再在 NAS 上用 `docker load` 导入；镜像构建及导入流程尚未验证。
 
 ## 功能与建议
 

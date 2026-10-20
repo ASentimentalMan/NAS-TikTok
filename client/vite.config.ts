@@ -13,7 +13,7 @@ export default defineConfig(({ mode }: ConfigEnv) => {
   const pathSrc = fileURLToPath(new URL("./src", import.meta.url));
   const env = loadEnv(mode, process.cwd());
   return {
-    base: env.VITE_BASE_URL,
+    base: env.VITE_BASE_URL || "/",
     plugins: [
       vue(),
       vueJsx(),
@@ -33,8 +33,14 @@ export default defineConfig(({ mode }: ConfigEnv) => {
     },
     server: {
       host: "0.0.0.0",
-      port: env.VITE_PORT as unknown as number,
+      port: Number(env.VITE_PORT || 5173),
       open: env.VITE_OPEN === "true",
+      proxy: {
+        "/api": {
+          target: env.VITE_API_PROXY || `http://127.0.0.1:${env.VITE_API_PORT || 3000}`,
+          changeOrigin: true,
+        },
+      },
     },
   };
 });

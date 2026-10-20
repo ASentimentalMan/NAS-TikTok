@@ -1,22 +1,20 @@
 import type { Router } from "vue-router";
+import { checkSession } from "@/apis/index";
 
 export const createRouterGuards = (router: Router) => {
   router.beforeEach(async (to, from, next) => {
-    const token = localStorage.getItem('token');
-    if (token) {
+    const whiteList = ['login'];
+    if (whiteList.includes(to.name as string)) {
       next();
-    } else {
-      const whiteList = ['login'];
-      if (whiteList.includes(to.name as string)) {
-        next();
-      } else {
-        next({
-          name: "login",
-          query: { redirect: to.fullPath },
-          replace: true,
-        });
-      }
+      return;
     }
+    const session = await checkSession();
+    if (session !== "unauthenticated") {
+      next();
+      return;
+    }
+    localStorage.removeItem("token");
+    next({ name: "login", query: { redirect: to.fullPath }, replace: true });
   });
 
   router.onError((error) => {

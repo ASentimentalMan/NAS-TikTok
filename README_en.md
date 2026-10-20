@@ -9,7 +9,7 @@
 <p align="center">
 <a><img src="https://img.shields.io/badge/license-GPLv3-orange"/></a>
 <a><img src="https://img.shields.io/badge/PRs-welcome-brightgreen"/></a>
-<a><img src="https://img.shields.io/badge/Powered%20by-NestJS-blue"/></a>
+<a><img src="https://img.shields.io/badge/Powered%20by-Go-blue"/></a>
 <a><img src="https://img.shields.io/badge/Powered%20by-Vue.js-blue"/></a>
 
 </p>
@@ -18,17 +18,15 @@ Are you overwhelmed by too many resources on your NAS and don't know what to wat
 
 ## Technology Stack
 
-### Backend NestJS
+### Backend Go
 
-1. Responsible for AUTH authentication.
+1. Provides a single-process API, login authentication, CAPTCHA, and media streaming.
 
-2. Performs reservoir sampling on the resource library (no database/no cache).
+2. Performs reservoir sampling on the media library (no database or cache).
 
-3. Supports HTTPS HTTP2 (requires your own domain/certificates).
+3. Supports configurable HTTP or HTTPS; HTTPS requires your own certificates.
 
-4. Supports LAN-only access (Docker requires host mode).
-
-5. Supports client IP binding (even if the URL is leaked, it cannot be viewed if the IP is different).
+4. Supports IP allowlists and optional IPv6 listening.
 
 ### Frontend Vue.js
 
@@ -58,25 +56,39 @@ Note: This project is for learning and research purposes only and must not be us
 
 ---
 
+The backend is written in Go. Node.js/npm are used only to run the Vue frontend development server. You need Go 1.24 or later and Node.js 22.23.3 (the version used by the project CI).
+
+Clone the project and create the media directory:
+
 ```bash
-git clone https://github.com/ASentimentalMan/NASTikTok
-cd NASTikTok
+git clone https://github.com/ASentimentalMan/NAS-TikTok.git
+cd NAS-TikTok
+mkdir -p statics
+```
 
-# Create the media folder and place test resources inside
-mkdir NASTikTok/statics
+Put the videos and images you want to browse in `statics/`. Open a terminal at the project root and start the Go backend. Keep this terminal running:
 
-# Backend
-cd NASTikTok/server
-npm install
-npm run dev
+```bash
+cd server_go
+ACCOUNT=demo \
+PASSWORD=change-me \
+JWT_SECRET='local-development-only-secret-replace-before-sharing' \
+LISTEN_PORT=3000 \
+MEDIA_ROOT=../statics \
+go run ./cmd/nas-tiktok
+```
 
-# Frontend
-cd NASTikTok/client
-npm install
+Open a second terminal at the project root and start the frontend:
+
+```bash
+cd client
+npm ci
 npm run dev
 ```
 
-Open your browser and visit: [http://127.0.0.1:3000](http://127.0.0.1:3000)
+Vite proxies `/api` requests to the backend. Open [http://127.0.0.1:5173](http://127.0.0.1:5173) and log in with account `demo` and password `change-me`. If your terminal does not start in the project root, first change to the cloned `NAS-TikTok` directory. The example secret is for local development only; replace it with a random secret of at least 32 bytes before sharing or deploying the app. Do not commit real credentials.
+
+Common Go settings: `LISTEN_HOST` (default `0.0.0.0`), `LISTEN_PORT` (default `3000`, or falls back to `VITE_API_PORT`), `MEDIA_ROOT` (default `server/statics`), `STATIC_ROOT` (default `client/dist`), optional `APP_URL_PREFIX`, `API_BASE` (optional frontend API base; defaults to same-origin `/api`), `SSL` (default `false`), `TLS_CERT_FILE` and `TLS_KEY_FILE` (default to `certs/fullchain.pem` and `certs/privkey.pem`), `ALLOWED_IPS`, `ALLOW_IPv6`, `ACCOUNT`, `PASSWORD`, `JWT_SECRET`, and `JWT_EXPIRE` (default 1200 seconds). The relative defaults for `MEDIA_ROOT` and `STATIC_ROOT` are resolved from the Go process's current working directory at startup. The local example runs from `server_go/`, so it explicitly sets the media directory to `../statics`; if the Go service serves the frontend, the default static directory is `server_go/client/dist`. The Docker image sets both paths to absolute locations. `COOKIE_SAME_SITE` defaults to `lax`, and `COOKIE_SECURE` defaults to the value of `SSL`. For cross-site cookies, list the frontend origin in `CORS_ORIGINS` and set `COOKIE_SAME_SITE=none` and `COOKIE_SECURE=true`; browsers also require HTTPS for cross-site cookies. Forwarded client-IP headers are trusted only from proxy ranges configured in `TRUSTED_PROXIES`. `ACCOUNT`, `PASSWORD`, and `JWT_SECRET` are required at runtime. When HTTPS is enabled, the certificate and key must be readable. Root-path deployment needs no extra setting. For a subpath, set `APP_URL_PREFIX` at runtime and the matching `VITE_BASE_URL` at build time (for example, `/photos/`).
 
 ### Deployment
 
@@ -89,73 +101,24 @@ Open your browser and visit: [http://127.0.0.1:3000](http://127.0.0.1:3000)
 ├── certs/ # Certificate folder
 │   ├── fullchain.pem # Certificate
 │   └── privkey.pem # Private key
-├── statics/ # Resource directory
-├── server/
-│   └── ...
-└── client/
-    └── ...
+├── statics/ # Read-only media directory
+└── client/dist/ # Vue static files generated during the Docker build
+/usr/local/bin/nas-tiktok # Single-process Go service
 ```
 
-#### Pull from Docker Hub
+#### Local build and deployment
 
 ```bash
-# Pull docker image
-docker pull asentimentalman/nas-tiktok:latest
+docker build -t nas-tiktok:local .
 ```
 
-#### Local build
+The `Dockerfile` builds Vue `client/dist` with Node.js, then builds the backend with Go 1.24. The final image runs one Go process to serve both the API and frontend files; it does not include NestJS, a Node.js runtime, or PM2. Account credentials and the JWT signing key are supplied at runtime and are not copied into the final image. The Docker build has not been validated.
 
-```bash
-# Create a Docker image
-docker build -t nas-tiktok .
+`build.sh` builds from the Git worktree containing the script. It does not fetch or switch branches. The image records the source Commit; builds from a worktree with uncommitted changes are marked `dirty`. Before deployment, create a Docker `KEY=value` runtime environment file at `$HOME/workspace/pm2/NAS-TikTok/.env` with at least `ACCOUNT`, `PASSWORD`, and a `JWT_SECRET` of 32 bytes or more. For HTTPS, set `SSL=true` and place `fullchain.pem` and `privkey.pem` in the sibling `certs/` directory; put media in `statics/`. Root-path deployment needs no extra setting. For a subpath, set `APP_URL_PREFIX=photos` in the runtime `.env`, then build the matching frontend with `VITE_BASE_URL=/photos/ bash ./build.sh`. Run `bash ./build.sh` and choose build, deploy, or build-and-deploy. Deployment prompts for `host` or `bridge` networking and the service port. If there is no old container and `ss` is available, the script makes a best-effort check for a local TCP listener; Docker may still report a port conflict when starting the container. It asks whether `.env` enables HTTPS; with the default certificate paths it checks that the certificate and key files exist, are nonempty, and are readable by the current user. Custom paths are checked by the container startup health check. Media and certificate directories are mounted read-only. The script creates a candidate container and waits up to 90 seconds for an in-container loopback health check. It removes the old container only after the candidate is healthy and attempts to restore the old container's previous running state if startup or health checking fails. The health check requests `/healthz` under `APP_URL_PREFIX`; HTTPS probes skip local certificate trust verification. Docker deployment has not been validated.
 
-# If your NAS cannot run Dockerfile, please build and export it from your computer, then import it to your NAS to start
-docker save -o nas-tiktok.tar nas-tiktok
-```
+With `host` networking, the service listens directly on the NAS port. With `bridge` networking, the script publishes the selected port. Bridge networking usually exposes the Docker bridge-side source address to the app; configure trusted proxies for the actual topology if client IP identification through a reverse proxy is needed. The container's default `ALLOWED_IPS` is `192.168.0.0/16,172.17.0.0/16`; adjust it in `.env` for other networks.
 
-#### Docker Startup Command
-
-```bash
-# Startup parameter description
-docker run -d \
-  --name nas-tiktok \
-  # /certs -> Certificates folder: must contain valid fullchain.pem and privkey.pem
-  -v /certs:/workspace/certs \
-  # /source -> Resource folder: resources to be browsed should be mapped here
-  -v /source:/workspace/statics \
-  # port -> Mapped port: only required for bridge mode
-  # In bridge mode, Docker cannot get the real IP, so IP change logout and LAN-only access features will not be available
-  -p port:port \
-  # SSL -> Enable SSL: if enabled, certs folder and certificates must be provided
-  -e SSL=false \
-  # ALLOWED_IPS -> Allow IPs
-  -e ALLOWED_IPS= \
-  # ACCOUNT -> Your account
-  -e ACCOUNT= \
-  # PASSWORD -> Your password
-  -e PASSWORD= \
-  # ALLOW_IPv6 -> Listen address: 0.0.0.0 means listen only on IPv4; :: means listen on both IPv4 and IPv6
-  -e ALLOW_IPv6=false \
-  # VITE_API_URL -> Access address: Server/NAS address, e.g., 192.168.1.100 or your domain
-  -e VITE_API_URL= \
-  # VITE_API_PORT -> Running port: e.g., 3000 (should match the mapped port in bridge mode)
-  -e VITE_API_PORT= \
-  # JWT_SECRET -> TOKEN encryption key: a string used to encrypt the token
-  -e JWT_SECRET= \
-  # JWT_EXPIRE -> TOKEN expiration time: default 1200 seconds (20 minutes)
-  -e JWT_EXPIRE=1200 \
-  nas-tiktok:latest
-```
-
-#### Additional Notes
-
-1. This project has features for logging out on IP change and LAN-only access. It is recommended to run it in Docker's --network host mode, as this mode can retrieve the client's real IP; otherwise, these two features will be ineffective.
-
-2. SSL: If you have a domain, it's strongly recommended to enable it! This will encrypt your data traffic and protect your privacy. If you don't have a domain, it's advisable to limit access to LAN only.
-
-3. ALLOWED_IPS: Only works when --network host is used, because Docker can only get the real access IP when bound to the host, otherwise it cannot impose restrictions.
-
-4. ALLOW_IPv6: If you have an IPv6 environment and enable IPv6 listening, you are able to access this app via IPv6 address outside your local network.
+To start the image offline on another NAS, export it on the build machine with `docker save` and import it on the NAS with `docker load`. Image build and import have not been validated.
 
 ## Features and Suggestions
 

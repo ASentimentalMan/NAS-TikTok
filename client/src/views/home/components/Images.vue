@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick, watch } from "vue"; // 引入 ref, watch
+import { ref, onMounted, onUnmounted, nextTick, watch } from "vue"; // 引入 ref, watch
 // 引入 Swiper Vue 组件
 import { Swiper, SwiperSlide } from "swiper/vue";
 // 引入 Swiper 核心样式和所需模块的样式
@@ -24,11 +24,17 @@ const props = defineProps({
 
 // 模块包含 Virtual 和 Autoplay
 const modules = [Virtual, Autoplay]; // <-- 在模块数组中加入 Autoplay
+const MAX_MEDIA_ITEMS = 200;
 
 // 视频数据
 const images = ref([]);
 
 const swiperInstance = ref(null);
+const isFetching = ref(false);
+let activeRequest = null;
+let retryAt = 0;
+let consecutiveFailures = 0;
+let duplicateBatches = 0;
 
 // --- 控制自动播放的状态变量 ---
 const isAutoplayEnabled = ref(false); // <-- 新增：控制自动播放是否开启的状态
@@ -65,32 +71,67 @@ watch(isAutoplayEnabled, (newValue) => {
 
 // 加载视频数据的方法
 const fetchData = async () => {
+  if (isFetching.value || Date.now() < retryAt) return;
+
+  const controller = new AbortController();
+  activeRequest = controller;
+  isFetching.value = true;
   try {
-    const response = await fetchImageList();
+    const response = await fetchImageList(controller.signal);
+    consecutiveFailures = 0;
     const list = response.data;
     if (list && list.length > 0) {
-      // Use a Set to filter out potential duplicates if your API might return them
-      const existingIds = new Set(images.value.map((img) => img.id));
-      const newList = list.filter((img) => !existingIds.has(img.id));
+      const existingURLs = new Set(images.value.map((image) => image.url));
+      const newList = list.filter((image) => {
+        if (existingURLs.has(image.url)) return false;
+        existingURLs.add(image.url);
+        return true;
+      });
 
       if (newList.length > 0) {
-        images.value = images.value.concat(newList);
+        consecutiveFailures = 0;
+        duplicateBatches = 0;
+        retryAt = 0;
+        const activeIndex = swiperInstance.value?.activeIndex ?? 0;
+        const combined = images.value.concat(newList);
+        const discarded = Math.max(0, combined.length - MAX_MEDIA_ITEMS);
+        images.value = discarded > 0 ? combined.slice(discarded) : combined;
         console.log("More data loaded, total images:", images.value.length);
 
         // 通知 Swiper Virtual 模块数据已更新
-        if (swiperInstance.value && swiperInstance.value.virtual) {
+        await nextTick();
+        if (
+          swiperInstance.value &&
+          swiperInstance.value.virtual &&
+          !swiperInstance.value.destroyed
+        ) {
           // virtual.update(true) is crucial after adding more data
           swiperInstance.value.virtual.update(true);
+          if (discarded > 0) {
+            swiperInstance.value.slideTo(Math.max(0, activeIndex - discarded), 0, false);
+          }
           console.log("Swiper virtual updated");
         }
       } else {
         console.log("No new data to load from the latest fetch.");
+        duplicateBatches += 1;
+        retryAt =
+          Date.now() + Math.min(1000 * 2 ** (duplicateBatches - 1), 30000);
       }
     } else {
       console.log("No more data to load from API.");
+      retryAt = Number.POSITIVE_INFINITY;
     }
   } catch (error) {
-    console.error("Error loading more images:", error);
+    if (!controller.signal.aborted) {
+      consecutiveFailures += 1;
+      retryAt =
+        Date.now() + Math.min(1000 * 2 ** (consecutiveFailures - 1), 30000);
+      console.error("Error loading more images:", error);
+    }
+  } finally {
+    if (activeRequest === controller) activeRequest = null;
+    isFetching.value = false;
   }
 };
 
@@ -140,6 +181,10 @@ const onSlideChange = (swiper) => {
 
 onMounted(() => {
   fetchData();
+});
+
+onUnmounted(() => {
+  activeRequest?.abort();
 });
 </script>
 

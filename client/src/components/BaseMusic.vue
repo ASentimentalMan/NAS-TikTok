@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onUnmounted } from "vue";
 import { Icon } from "@iconify/vue";
 import MusicIcon from "@/assets/imgs/music.png";
 const props = defineProps({
@@ -17,6 +18,7 @@ const props = defineProps({
 });
 
 let showMutedNotice = ref(false);
+let mutedNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
 const style = computed(() => {
   return { webkitAnimationPlayState: props.isPlaying ? "running" : "paused" };
@@ -25,15 +27,26 @@ const style = computed(() => {
 watch(
   () => props.muted,
   (newValue) => {
+    if (mutedNoticeTimeout) {
+      clearTimeout(mutedNoticeTimeout);
+      mutedNoticeTimeout = undefined;
+    }
     if (newValue && props.index === 0) {
       showMutedNotice.value = true;
-      setTimeout(() => {
+      mutedNoticeTimeout = setTimeout(() => {
         showMutedNotice.value = false;
+        mutedNoticeTimeout = undefined;
       }, 1000);
+    } else {
+      showMutedNotice.value = false;
     }
   },
   { immediate: true }
 );
+
+onUnmounted(() => {
+  if (mutedNoticeTimeout) clearTimeout(mutedNoticeTimeout);
+});
 </script>
 
 <template>

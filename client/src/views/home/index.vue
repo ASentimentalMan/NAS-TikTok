@@ -23,6 +23,8 @@ const underlineStyle = reactive({
   transition: "left 0.3s ease-out, width 0.3s ease-out",
 });
 const tabsComponentRef = ref(null);
+let underlineFrame = null;
+let restoreTransitionFrame = null;
 
 const onSwiperInitialized = (swiper) => {
   swiperInstance.value = swiper;
@@ -38,15 +40,8 @@ const onSlideChangeHandler = (swiper) => {
 };
 
 const onSwiperProgress = (swiper, progress) => {
-  if (
-    !tabsComponentRef.value ||
-    !tabsComponentRef.value.getTabItemRefs ||
-    !tabsComponentRef.value.getTabItemRefs().length === 0
-  ) {
-    return;
-  }
-
-  const tabItemRefs = tabsComponentRef.value.getTabItemRefs();
+  const tabItemRefs = tabsComponentRef.value?.getTabItemRefs?.() ?? [];
+  if (tabItemRefs.length === 0) return;
   underlineStyle.transition = "left 0.05s linear, width 0.05s linear";
 
   const totalTabs = slides.value.length;
@@ -92,15 +87,8 @@ const goToSlide = (index) => {
 };
 
 const updateUnderline = (smooth = true) => {
-  if (
-    !tabsComponentRef.value ||
-    !tabsComponentRef.value.getTabItemRefs ||
-    !tabsComponentRef.value.getTabItemRefs().length === 0
-  ) {
-    return;
-  }
-
-  const tabItemRefs = tabsComponentRef.value.getTabItemRefs();
+  const tabItemRefs = tabsComponentRef.value?.getTabItemRefs?.() ?? [];
+  if (tabItemRefs.length === 0) return;
   if (tabItemRefs && tabItemRefs.length > activeTabIndex.value) {
     const activeTabEl = tabItemRefs[activeTabIndex.value];
     if (activeTabEl) {
@@ -111,8 +99,12 @@ const updateUnderline = (smooth = true) => {
       underlineStyle.width = `${activeTabEl.offsetWidth}px`;
 
       if (!smooth) {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
+        if (underlineFrame !== null) cancelAnimationFrame(underlineFrame);
+        if (restoreTransitionFrame !== null) cancelAnimationFrame(restoreTransitionFrame);
+        underlineFrame = requestAnimationFrame(() => {
+          underlineFrame = null;
+          restoreTransitionFrame = requestAnimationFrame(() => {
+            restoreTransitionFrame = null;
             underlineStyle.transition =
               "left 0.3s ease-out, width 0.3s ease-out";
           });
@@ -136,6 +128,12 @@ const setRealVh = () => {
 onMounted(() => {
   setRealVh();
   window.addEventListener("resize", setRealVh);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("resize", setRealVh);
+  if (underlineFrame !== null) cancelAnimationFrame(underlineFrame);
+  if (restoreTransitionFrame !== null) cancelAnimationFrame(restoreTransitionFrame);
 });
 </script>
 

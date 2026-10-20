@@ -19,7 +19,7 @@ const captchaData = ref({
 
 const getCaptcha = async () => {
   try {
-    const response = await captcha(fromData.value);
+    const response = await captcha();
     captchaData.value = response;
   } catch (e) {
     toastRef.value.show(e.message);
@@ -35,11 +35,11 @@ const LogIn = async () => {
     return;
   }
   try {
-    const response = await login({
+    await login({
       ...fromData.value,
       codeId: captchaData.value.id,
     });
-    localStorage.setItem("token", response.token);
+    localStorage.removeItem("token");
     router.replace({ path: "/" });
   } catch (e) {
     getCaptcha();
@@ -51,9 +51,10 @@ const LogIn = async () => {
       "savedLogin",
       JSON.stringify({
         account: fromData.value.account,
-        password: fromData.value.password,
       })
     );
+  } else {
+    localStorage.removeItem("savedLogin");
   }
 };
 
@@ -63,10 +64,21 @@ const clearInput = (field) => {
 };
 
 onMounted(() => {
+  localStorage.removeItem("token");
   const savedLogin = localStorage.getItem("savedLogin");
   if (savedLogin) {
-    remember.value = true;
-    fromData.value = { ...JSON.parse(savedLogin), code: "" };
+    try {
+      const parsed = JSON.parse(savedLogin);
+      if (typeof parsed.account === "string") {
+        fromData.value.account = parsed.account;
+        remember.value = true;
+        localStorage.setItem("savedLogin", JSON.stringify({ account: parsed.account }));
+      } else {
+        localStorage.removeItem("savedLogin");
+      }
+    } catch {
+      localStorage.removeItem("savedLogin");
+    }
   }
   getCaptcha();
 });

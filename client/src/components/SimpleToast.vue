@@ -1,16 +1,24 @@
 <script setup>
+import { onUnmounted } from "vue";
 const visible = ref(false);
 const message = ref("");
+let hideTimeout = null;
 
 const show = (msg, duration = 2000) => {
+  if (hideTimeout) clearTimeout(hideTimeout);
   message.value = msg;
   visible.value = true;
-  setTimeout(() => {
+  hideTimeout = setTimeout(() => {
     visible.value = false;
+    hideTimeout = null;
   }, duration);
 };
 
 defineExpose({ show });
+
+onUnmounted(() => {
+  if (hideTimeout) clearTimeout(hideTimeout);
+});
 </script>
 
 <template>

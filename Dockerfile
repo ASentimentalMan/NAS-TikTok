@@ -1,7 +1,6 @@
-# --- Client Builder Stage ---
-FROM node:22-alpine AS client-builder
+# Build the Vue frontend with its locked Node.js dependencies.
+FROM node:22.23.3-alpine3.24 AS client-builder
 
-# 设置代理
 ARG HTTP_PROXY=
 ARG HTTPS_PROXY=
 ENV HTTP_PROXY=${HTTP_PROXY}
@@ -9,74 +8,41 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 ENV NO_PROXY="localhost,127.0.0.1,::1,172.17.0.1"
 
 WORKDIR /app/client
-
-# 复制客户端依赖文件
+ARG VITE_BASE_URL=/
+ENV VITE_BASE_URL=${VITE_BASE_URL}
 COPY client/package*.json ./
 RUN npm ci --no-audit --no-fund
-
-# 复制客户端源代码并构建
 COPY client/ ./
-RUN npm run build && \
-  npm cache clean --force
+RUN npm run build
 
-# --- Server Builder Stage ---
-FROM node:22-alpine AS server-builder
+# Build a static Go binary for the production server.
+FROM golang:1.24-alpine AS server-builder
+WORKDIR /src/server_go
+COPY server_go/ ./
+RUN mkdir -p /out && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/nas-tiktok ./cmd/nas-tiktok
 
-# 设置代理
-ARG HTTP_PROXY=
-ARG HTTPS_PROXY=
-ENV HTTP_PROXY=${HTTP_PROXY}
-ENV HTTPS_PROXY=${HTTPS_PROXY}
-ENV NO_PROXY="localhost,127.0.0.1,::1,172.17.0.1"
-
-WORKDIR /app/server
-
-# 复制服务端依赖文件
-COPY server/package*.json ./
-RUN npm ci --no-audit --no-fund
-
-# 复制服务端源代码并构建
-COPY server/ ./
-RUN npm run build && \
-  npm prune --omit=dev && \
-  npm cache clean --force
-
-# --- Runtime Stage ---
-FROM node:22-alpine
-
+# Run the Go API and serve the Vue dist from the same process.
+FROM alpine:3.21 AS runtime
+RUN apk add --no-cache curl && \
+    addgroup -S app && adduser -S -G app app
 WORKDIR /workspace
 
-# 设置生产环境变量
-ENV NODE_ENV=production
-ENV SSL=true
-ENV ALLOWED_IPS=192.168.0.0/16,172.17.0.0/16
-ENV ALLOW_IPv6=false
-ENV VITE_API_URL=
-ENV VITE_API_PORT=3000
-ENV ACCOUNT=
-ENV PASSWORD=
-ENV JWT_SECRET=
-ENV JWT_EXPIRE=1200
+ENV APP_NAME=NAS-TikTok \
+    LISTEN_HOST=0.0.0.0 \
+    LISTEN_PORT=3000 \
+    SSL=false \
+    ALLOW_IPv6=false \
+    ALLOWED_IPS=192.168.0.0/16,172.17.0.0/16 \
+    MEDIA_ROOT=/workspace/statics \
+    STATIC_ROOT=/workspace/client/dist
 
-# 安装PM2
-RUN npm install -g pm2@latest --no-audit --no-fund && \
-  npm cache clean --force
+EXPOSE 3000
+COPY --from=client-builder /app/client/dist /workspace/client/dist
+COPY --from=server-builder /out/nas-tiktok /usr/local/bin/nas-tiktok
 
-# 从client-builder复制客户端构建产物
-COPY --from=client-builder /app/client/dist /workspace/client/dist/
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
+    CMD prefix="${APP_URL_PREFIX:-}"; prefix="${prefix#/}"; prefix="${prefix%/}"; path=/healthz; if [ -n "$prefix" ]; then path="/$prefix$path"; fi; ssl="$(printf '%s' "${SSL:-false}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"; scheme=http; if [ "$ssl" = true ]; then scheme=https; fi; curl --fail --silent --show-error --insecure --max-time 3 "$scheme://127.0.0.1:${LISTEN_PORT:-3000}$path" >/dev/null
 
-# 从server-builder复制服务端文件
-COPY --from=server-builder /app/server/.env* /workspace/server/
-COPY --from=server-builder \
-  /app/server/ecosystem.config.js \
-  /app/server/entrypoint.sh \
-  /workspace/
-
-# 复制生产依赖和构建产物
-COPY --from=server-builder /app/server/node_modules /workspace/server/node_modules
-COPY --from=server-builder /app/server/dist /workspace/server/dist/
-
-# 设置权限
-RUN chmod +x /workspace/entrypoint.sh
-
-ENTRYPOINT ["/workspace/entrypoint.sh"]
+USER app:app
+ENTRYPOINT ["/usr/local/bin/nas-tiktok"]

@@ -34,14 +34,14 @@ const SlideItemPlayStatus = {
   Stop: "Stop",
   Pause: "Pause",
 };
-const token = computed(() => localStorage.getItem("token"));
-
 const videoRef = ref(null);
 const containerRef = ref(null); // **新增：容器元素的引用**
 const isPlaying = computed(() => state.status === SlideItemPlayStatus.Play);
 const isLoading = ref(true);
 const touched = ref(false);
 const touchedTimeout = ref(null);
+let transitionResetTimeout = null;
+let progressSeekTimeout = null;
 const onTouchStart = () => {
   touched.value = true;
   if (touchedTimeout.value) {
@@ -187,17 +187,18 @@ const pause = () => {
   }
 };
 
-const togglePlay = () => {
+const togglePlay = (event) => {
   // 如果正在长按速度区域，点击不应该暂停/播放视频
   if (videoState.isLongPressingSpeed) {
     return;
   }
   // 如果点击到了工具按钮区域，也不应该触发播放暂停
   // 简单的判断方式是检查事件的 target 是否是 .tool-button 或者其子元素
-  if (event.target.closest(".tool-button")) {
+  if (event.target instanceof Element && event.target.closest(".tool-button")) {
     return;
   }
 
+  if (videoRef.value?.error) videoRef.value.load();
   if (isPlaying.value) {
     pause();
   } else {
@@ -245,13 +246,16 @@ const handleTransitionEnd = (event) => {
 
       // 在下一个 DOM 更新周期将角度值设置为 0
       nextTick(() => {
+        if (!videoRef.value) return;
         rotationAngle.value = 0;
         // console.log('rotationAngle reset to 0.');
 
         // 稍作延迟后恢复 transition 属性
         // 延迟的目的是确保浏览器有足够的时间在没有 transition 的情况下应用新的 0 度值
         // 0毫秒的 setTimeout 配合 nextTick 通常也足够了，或者可以给一个很小的延迟
-        setTimeout(() => {
+        if (transitionResetTimeout) clearTimeout(transitionResetTimeout);
+        transitionResetTimeout = setTimeout(() => {
+          transitionResetTimeout = null;
           if (videoRef.value) {
             videoRef.value.style.transition = "transform 0.2s ease-in-out";
             // console.log('Transition re-enabled.');
@@ -265,21 +269,21 @@ const handleTransitionEnd = (event) => {
 // 3. 随机位置播放
 const seekRandom = () => {
   const videoElement = videoRef.value;
-  if (videoElement && state.duration > 5) {
-    const maxSeekTime = state.duration - 5;
+  if (!videoElement || videoElement.readyState < 1) return false;
+
+  const duration = videoElement.duration;
+  if (Number.isFinite(duration) && duration > 5) {
+    const maxSeekTime = duration - 5;
     const randomTime = Math.random() * maxSeekTime;
     videoElement.currentTime = randomTime;
-    // 确保更新本地 currentTime 状态以同步 UI
     state.currentTime = Math.floor(randomTime);
-    // console.log("Seek Random to:", randomTime);
-    play(); // 随机跳转后开始播放
-  } else if (videoElement) {
-    // console.log("Video too short for random seek (duration < 5s)");
-    // 如果视频很短，也可以选择跳转到开头或不操作
+  } else if (Number.isFinite(duration)) {
     videoElement.currentTime = 0;
     state.currentTime = 0;
-    play();
   }
+
+  play();
+  return true;
 };
 
 // 4. 静音切换
@@ -293,8 +297,7 @@ watch(
   (newValue) => {
     if (newValue) {
       if (props.randomPlay && isFirstPlay) {
-        seekRandom();
-        isFirstPlay = false;
+        if (seekRandom()) isFirstPlay = false;
       } else {
         play();
       }
@@ -423,7 +426,9 @@ const touchend = (e) => {
   }
 
   // 延时退出拖动状态，让时间显示一会儿
-  setTimeout(() => {
+  if (progressSeekTimeout) clearTimeout(progressSeekTimeout);
+  progressSeekTimeout = setTimeout(() => {
+    progressSeekTimeout = null;
     state.isMove = false;
     // 恢复播放（如果在 touchend 之前不是暂停状态的话）
     // 或者只在用户点击屏幕中心时才恢复播放，避免拖动后自动播放
@@ -451,7 +456,6 @@ const handleSpeedTouchStart = (e) => {
     clearTimeout(videoState.longPressTimer);
     videoState.longPressTimer = null;
   }
-
   // 开始长按定时器
   videoState.longPressTimer = setTimeout(() => {
     videoState.isLongPressingSpeed = true;
@@ -581,7 +585,8 @@ const updateVideoOriginalDimensions = () => {
 
 // 使用具名函数，以便在 onUnmounted 中正确移除
 const handleLoadedMetadata = () => {
-  state.duration = videoRef.value.duration;
+  const videoDuration = videoRef.value?.duration;
+  state.duration = Number.isFinite(videoDuration) ? videoDuration : 0;
   // 确保 progressRef 尺寸已获取
   if (state.progressBarRect.width > 0 && state.duration > 0) {
     state.step = state.progressBarRect.width / state.duration; // 使用 duration 计算步长更准确
@@ -609,7 +614,11 @@ const handleLoadedMetadata = () => {
   // 确保视频加载元数据后，如果 isActive 为 true，就尝试播放
   // 这是处理初始加载的关键
   if (props.isActive) {
-    play();
+    if (props.randomPlay && isFirstPlay) {
+      if (seekRandom()) isFirstPlay = false;
+    } else {
+      play();
+    }
   }
 };
 
@@ -657,21 +666,32 @@ const handleEnded = () => {
   state.status = SlideItemPlayStatus.Stop; // 设置为停止状态 (或 Pause)
 };
 
-const handleVideoError = async () => {
+const handleVideoError = async (event) => {
+  if (event.type !== "error") return;
+  isLoading.value = false;
+  state.status = SlideItemPlayStatus.Stop;
   try {
-    const response = await fetch(`${props.video.url}?auth=${token.value}`, {
+    const response = await fetch(props.video.url, {
       method: "HEAD",
+      credentials: "include",
     });
     if (response.status === 401) {
-      videoRef.value.pause();
+      videoRef.value?.pause();
       localStorage.removeItem("token");
       router.replace("/login");
+      return;
     }
-  } catch (error) {
-    console.error("检查视频 token 失败:", error);
-    videoRef.value.pause();
-    localStorage.removeItem("token");
-    router.replace("/login");
+    const messages = {
+      403: "无权访问该视频",
+      404: "视频文件不存在",
+      416: "视频范围请求无效",
+    };
+    toastRef.value?.show(
+      messages[response.status] ||
+        (response.ok ? "视频加载失败，请检查文件格式或稍后重试" : "视频服务暂不可用")
+    );
+  } catch {
+    toastRef.value?.show("视频网络异常，请检查连接后重试");
   }
 };
 
@@ -741,8 +761,9 @@ onMounted(() => {
     videoRef.value.addEventListener("loadedmetadata", handleLoadedMetadata);
     videoRef.value.addEventListener("timeupdate", handleTimeUpdate);
     videoRef.value.addEventListener("ended", handleEnded);
-    videoRef.value.addEventListener("stalled", handleVideoError);
+    videoRef.value.addEventListener("error", handleVideoError);
     videoRef.value.addEventListener("transitionend", handleTransitionEnd);
+    if (videoRef.value.readyState >= 1) handleLoadedMetadata();
   } else {
     console.warn("Video ref is not available on mount to add event listeners.");
   }
@@ -757,6 +778,18 @@ onUnmounted(() => {
   if (videoState.longPressTimer) {
     clearTimeout(videoState.longPressTimer);
     videoState.longPressTimer = null;
+  }
+  if (touchedTimeout.value) {
+    clearTimeout(touchedTimeout.value);
+    touchedTimeout.value = null;
+  }
+  if (transitionResetTimeout) {
+    clearTimeout(transitionResetTimeout);
+    transitionResetTimeout = null;
+  }
+  if (progressSeekTimeout) {
+    clearTimeout(progressSeekTimeout);
+    progressSeekTimeout = null;
   }
   // 恢复默认倍速
   setPlaybackRate(1);
@@ -775,6 +808,7 @@ onUnmounted(() => {
     videoElement.removeEventListener("loadedmetadata", handleLoadedMetadata);
     videoElement.removeEventListener("timeupdate", handleTimeUpdate);
     videoElement.removeEventListener("ended", handleEnded);
+    videoElement.removeEventListener("error", handleVideoError);
     // **新增：移除 transitionend 监听器**
     videoElement.removeEventListener("transitionend", handleTransitionEnd);
     // 确保移除临时设置的 transition 属性，虽然 unmount 后元素会销毁
@@ -790,6 +824,7 @@ onUnmounted(() => {
   <div class="video-player-container" ref="containerRef" @click="togglePlay">
     <video
       ref="videoRef"
+      crossorigin="use-credentials"
       :muted="muted"
       preload="metadata"
       loop
@@ -803,7 +838,7 @@ onUnmounted(() => {
         transform: `rotate(${rotationAngle}deg) scale(${scaleFactor})`,
       }"
     >
-      <source :src="`${video.url}?auth=${token}`" />
+      <source :src="video.url" />
       <p>您的浏览器不支持 video 标签。</p>
     </video>
     <Loading v-if="isLoading" style="position: absolute" />

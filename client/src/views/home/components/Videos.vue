@@ -1,4 +1,5 @@
 <script setup>
+import { onUnmounted, ref } from "vue";
 // 引入 Swiper Vue 组件
 import { Swiper, SwiperSlide } from "swiper/vue";
 // 引入 Swiper 核心样式和所需模块的样式
@@ -28,33 +29,81 @@ const muted = inject("muted", {
 });
 // 模块只保留 Virtual
 const modules = [Virtual];
+const MAX_MEDIA_ITEMS = 200;
 
 // 视频数据
 const videos = ref([]);
 
 const swiperInstance = ref(null);
+const isFetching = ref(false);
+let activeRequest = null;
+let retryAt = 0;
+let consecutiveFailures = 0;
+let duplicateBatches = 0;
 // playingIndex 和 isPlaying 状态现在主要由 Swiper 的 activeIndex 驱动
 // 如果需要全局的播放状态，可以根据 swiperInstance?.activeIndex 来判断
 // 加载视频数据的方法
 const fetchData = async () => {
+  if (isFetching.value || Date.now() < retryAt) return;
+
+  const controller = new AbortController();
+  activeRequest = controller;
+  isFetching.value = true;
   try {
-    const response = await fetchVideoList();
+    const response = await fetchVideoList(controller.signal);
+    consecutiveFailures = 0;
     const list = response.data;
     if (list && list.length > 0) {
-      videos.value = videos.value.concat(list);
-      console.log("More data loaded, total videos:", videos.value.length);
+      const existingURLs = new Set(videos.value.map((video) => video.url));
+      const newList = list.filter((video) => {
+        if (existingURLs.has(video.url)) return false;
+        existingURLs.add(video.url);
+        return true;
+      });
 
-      // 通知 Swiper Virtual 模块数据已更新
-      if (swiperInstance.value && swiperInstance.value.virtual) {
-        // virtual.update(true) is crucial after adding more data
-        swiperInstance.value.virtual.update(true);
-        console.log("Swiper virtual updated");
+      if (newList.length > 0) {
+        consecutiveFailures = 0;
+        duplicateBatches = 0;
+        retryAt = 0;
+        const activeIndex = swiperInstance.value?.activeIndex ?? 0;
+        const combined = videos.value.concat(newList);
+        const discarded = Math.max(0, combined.length - MAX_MEDIA_ITEMS);
+        videos.value = discarded > 0 ? combined.slice(discarded) : combined;
+        console.log("More data loaded, total videos:", videos.value.length);
+
+        // 通知 Swiper Virtual 模块数据已更新
+        await nextTick();
+        if (
+          swiperInstance.value &&
+          swiperInstance.value.virtual &&
+          !swiperInstance.value.destroyed
+        ) {
+          // virtual.update(true) is crucial after adding more data
+          swiperInstance.value.virtual.update(true);
+          if (discarded > 0) {
+            swiperInstance.value.slideTo(Math.max(0, activeIndex - discarded), 0, false);
+          }
+          console.log("Swiper virtual updated");
+        }
+      } else {
+        duplicateBatches += 1;
+        retryAt =
+          Date.now() + Math.min(1000 * 2 ** (duplicateBatches - 1), 30000);
       }
     } else {
       console.log("No more data to load.");
+      retryAt = Number.POSITIVE_INFINITY;
     }
   } catch (error) {
-    console.error("Error loading more videos:", error);
+    if (!controller.signal.aborted) {
+      consecutiveFailures += 1;
+      retryAt =
+        Date.now() + Math.min(1000 * 2 ** (consecutiveFailures - 1), 30000);
+      console.error("Error loading more videos:", error);
+    }
+  } finally {
+    if (activeRequest === controller) activeRequest = null;
+    isFetching.value = false;
   }
 };
 
@@ -99,6 +148,10 @@ const onSlideChange = (swiper) => {
 
 onMounted(() => {
   fetchData();
+});
+
+onUnmounted(() => {
+  activeRequest?.abort();
 });
 </script>
 

@@ -3,9 +3,9 @@ import { setupRouter } from "./router";
 import "@/assets/styles/reset.less";
 import "@/assets/styles/custom.less";
 
-const bootstrap = () => {
+const bootstrap = async () => {
   const app = createApp(App);
-  setupRouter(app);
+  await setupRouter(app);
 
   app.mount("#app");
 };

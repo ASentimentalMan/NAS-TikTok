@@ -55,7 +55,7 @@ const onProgress = (swiper, progress) => {
     :slides-per-view="1"
     :space-between="0"
     :watch-slides-progress="true"
-    :initial-slide="props.slides.length - 1"
+    :initial-slide="activeIndex"
     @swiper="onSwiper"
     @slideChange="onSlideChange"
     @progress="onProgress"
