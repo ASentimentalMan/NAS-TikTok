@@ -32,21 +32,21 @@ type Handler struct {
 	stream   *streaming.Handler
 	limiter  *rateLimiter
 	web      http.Handler
+	logger   *log.Logger
 }
 
 func New(cfg config.Config, authenticator *auth.Service, captchas *captcha.Service, sessions *session.Manager, media *catalog.Catalog) *Handler {
 	return &Handler{
 		config: cfg, auth: authenticator, captcha: captchas, sessions: sessions,
 		catalog: media, stream: streaming.New(media), limiter: newRateLimiter(),
+		logger: log.Default(),
 	}
 }
 
 func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	started := time.Now()
 	status := &statusWriter{ResponseWriter: writer, status: http.StatusOK}
-	defer func() {
-		log.Printf("http method=%s status=%d duration_ms=%d", request.Method, status.status, time.Since(started).Milliseconds())
-	}()
+	defer handler.logRequest(request, status, started)
 	writer = status
 	apiPath := handler.config.BasePath + "/api"
 	requestPath := request.URL.Path
@@ -57,9 +57,16 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	}
 
 	healthPath := requestPath == "/healthz" || (handler.config.BasePath != "" && requestPath == handler.config.BasePath+"/healthz")
+	status.peerIP = requestPeerIP(request.RemoteAddr)
+	status.clientIP = "unknown"
 	address, err := access.ClientIP(request, handler.config.TrustedProxies)
-	if err != nil || (!access.Allowed(address, handler.config.AllowedIPs) && !(healthPath && address.IsLoopback())) {
-		writeError(writer, http.StatusForbidden, "禁止访问")
+	if err != nil {
+		writeErrorReason(writer, http.StatusForbidden, "禁止访问", "invalid_client_ip")
+		return
+	}
+	status.clientIP = address.String()
+	if !access.Allowed(address, handler.config.AllowedIPs) && !(healthPath && address.IsLoopback()) {
+		writeErrorReason(writer, http.StatusForbidden, "禁止访问", "ip_not_allowed")
 		return
 	}
 	if healthPath || apiRequest || request.Method == http.MethodOptions {
@@ -85,7 +92,7 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	}
 	if apiRequest {
 		if !handler.crossSiteRequestAllowed(request) {
-			writeError(writer, http.StatusForbidden, "请求来源不允许")
+			writeErrorReason(writer, http.StatusForbidden, "请求来源不允许", "cross_site_request_not_allowed")
 			return
 		}
 		handler.serveAPI(writer, request, address, apiPath)
@@ -106,12 +113,12 @@ func (handler *Handler) serveAPI(writer http.ResponseWriter, request *http.Reque
 			return
 		}
 		if !handler.limiter.allow("captcha:"+address.String(), handler.config.CaptchaRateLimit, time.Now()) {
-			writeError(writer, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
+			writeErrorReason(writer, http.StatusTooManyRequests, "请求过于频繁，请稍后再试", "captcha_rate_limited")
 			return
 		}
 		result, err := handler.captcha.Create()
 		if err != nil {
-			writeError(writer, http.StatusServiceUnavailable, "验证码暂不可用")
+			writeErrorReason(writer, http.StatusServiceUnavailable, "验证码暂不可用", "internal_error")
 			return
 		}
 		writer.Header().Set("Cache-Control", "no-store")
@@ -123,7 +130,7 @@ func (handler *Handler) serveAPI(writer http.ResponseWriter, request *http.Reque
 			return
 		}
 		if _, ok := handler.requestClaims(request); !ok {
-			writeError(writer, http.StatusUnauthorized, "用户未登录")
+			writeErrorReason(writer, http.StatusUnauthorized, "用户未登录", "authentication_required")
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"data": map[string]bool{"authenticated": true}})
@@ -149,40 +156,42 @@ func (handler *Handler) login(writer http.ResponseWriter, request *http.Request,
 	if !requireMethod(writer, request, http.MethodPost) {
 		return
 	}
-	if !handler.originAllowed(request) {
-		writeError(writer, http.StatusForbidden, "请求来源不允许")
+	if request.Header.Get("Origin") == "" {
+		writeErrorReason(writer, http.StatusForbidden, "请求来源不允许", "origin_missing")
 		return
 	}
-	if request.Header.Get("Origin") == "" {
-		writeError(writer, http.StatusForbidden, "请求来源不允许")
+	decision := handler.checkOrigin(request)
+	handler.recordOrigin(writer, decision)
+	if !decision.allowed {
+		writeErrorReason(writer, http.StatusForbidden, "请求来源不允许", decision.sameOriginReason)
 		return
 	}
 	if !handler.limiter.allow("login:ip:"+address.String(), handler.config.LoginRateLimit, time.Now()) {
-		writeError(writer, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试")
+		writeErrorReason(writer, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试", "login_rate_limited")
 		return
 	}
 	var body loginRequest
 	if err := decodeJSON(writer, request, &body); err != nil {
-		writeError(writer, http.StatusBadRequest, "登录请求格式无效")
+		writeErrorReason(writer, http.StatusBadRequest, "登录请求格式无效", "login_request_invalid")
 		return
 	}
 	if !handler.captcha.Consume(body.CodeID, body.Code) {
-		writeError(writer, http.StatusBadRequest, "验证码错误或已过期")
+		writeErrorReason(writer, http.StatusBadRequest, "验证码错误或已过期", "captcha_invalid")
 		return
 	}
 	if !handler.limiter.allowLoginAccount(body.Account, handler.config.LoginRateLimit, time.Now()) {
-		writeError(writer, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试")
+		writeErrorReason(writer, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试", "login_rate_limited")
 		return
 	}
 	if !handler.auth.Verify(body.Account, body.Password) {
 		handler.limiter.recordLoginFailure(body.Account, time.Now())
-		writeError(writer, http.StatusUnauthorized, "账号或密码错误")
+		writeErrorReason(writer, http.StatusUnauthorized, "账号或密码错误", "credentials_invalid")
 		return
 	}
 	handler.limiter.recordLoginSuccess(body.Account)
 	token, expires, err := handler.sessions.Create(body.Account)
 	if err != nil {
-		writeError(writer, http.StatusServiceUnavailable, "登录服务暂不可用")
+		writeErrorReason(writer, http.StatusServiceUnavailable, "登录服务暂不可用", "internal_error")
 		return
 	}
 	http.SetCookie(writer, &http.Cookie{
@@ -198,8 +207,14 @@ func (handler *Handler) logout(writer http.ResponseWriter, request *http.Request
 	if !requireMethod(writer, request, http.MethodPost) {
 		return
 	}
-	if request.Header.Get("Origin") == "" || !handler.originAllowed(request) {
-		writeError(writer, http.StatusForbidden, "请求来源不允许")
+	if request.Header.Get("Origin") == "" {
+		writeErrorReason(writer, http.StatusForbidden, "请求来源不允许", "origin_missing")
+		return
+	}
+	decision := handler.checkOrigin(request)
+	handler.recordOrigin(writer, decision)
+	if !decision.allowed {
+		writeErrorReason(writer, http.StatusForbidden, "请求来源不允许", decision.sameOriginReason)
 		return
 	}
 	if cookie, err := request.Cookie(session.CookieName); err == nil {
@@ -218,12 +233,12 @@ func (handler *Handler) list(writer http.ResponseWriter, request *http.Request, 
 		return
 	}
 	if _, ok := handler.requestClaims(request); !ok {
-		writeError(writer, http.StatusUnauthorized, "用户未登录")
+		writeErrorReason(writer, http.StatusUnauthorized, "用户未登录", "authentication_required")
 		return
 	}
 	mediaType := request.URL.Query().Get("type")
 	if mediaType != "image" && mediaType != "video" {
-		writeError(writer, http.StatusBadRequest, "媒体类型无效")
+		writeErrorReason(writer, http.StatusBadRequest, "媒体类型无效", "invalid_media_type")
 		return
 	}
 	items, err := handler.catalog.List(request.Context(), mediaType)
@@ -231,10 +246,7 @@ func (handler *Handler) list(writer http.ResponseWriter, request *http.Request, 
 		if errors.Is(err, context.Canceled) {
 			return
 		}
-		if !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("media scan failed type=%s: %v", mediaType, err)
-		}
-		writeError(writer, http.StatusServiceUnavailable, "媒体列表暂时不可用")
+		writeErrorReason(writer, http.StatusServiceUnavailable, "媒体列表暂时不可用", mediaScanReason(err))
 		return
 	}
 	urls := make([]string, 0, len(items))
@@ -251,7 +263,7 @@ func (handler *Handler) list(writer http.ResponseWriter, request *http.Request, 
 
 func (handler *Handler) media(writer http.ResponseWriter, request *http.Request, apiPath string) {
 	if _, ok := handler.requestClaims(request); !ok {
-		writeError(writer, http.StatusUnauthorized, "用户未登录")
+		writeErrorReason(writer, http.StatusUnauthorized, "用户未登录", "authentication_required")
 		return
 	}
 	relative := strings.TrimPrefix(request.URL.Path, apiPath+"/stream/")
@@ -275,8 +287,10 @@ func (handler *Handler) applyCORS(writer http.ResponseWriter, request *http.Requ
 	if origin == "" {
 		return true
 	}
-	if !handler.originAllowed(request) {
-		writeError(writer, http.StatusForbidden, "请求来源不允许")
+	decision := handler.checkOrigin(request)
+	handler.recordOrigin(writer, decision)
+	if !decision.allowed {
+		writeErrorReason(writer, http.StatusForbidden, "请求来源不允许", decision.sameOriginReason)
 		return false
 	}
 	handler.setCORSHeaders(writer, origin)
@@ -285,7 +299,13 @@ func (handler *Handler) applyCORS(writer http.ResponseWriter, request *http.Requ
 
 func (handler *Handler) applyCORSIfAllowed(writer http.ResponseWriter, request *http.Request) {
 	origin := request.Header.Get("Origin")
-	if origin == "" || !handler.originAllowed(request) {
+	if origin == "" {
+		writer.Header().Add("Vary", "Origin")
+		return
+	}
+	decision := handler.checkOrigin(request)
+	handler.recordOrigin(writer, decision)
+	if !decision.allowed {
 		writer.Header().Add("Vary", "Origin")
 		return
 	}
@@ -319,7 +339,7 @@ func (handler *Handler) options(writer http.ResponseWriter, request *http.Reques
 		for _, header := range strings.Split(requestedHeaders, ",") {
 			name := strings.ToLower(strings.TrimSpace(header))
 			if name != "content-type" && name != "range" {
-				writeError(writer, http.StatusForbidden, "请求头不允许")
+				writeErrorReason(writer, http.StatusForbidden, "请求头不允许", "preflight_header_not_allowed")
 				return
 			}
 		}
@@ -382,38 +402,7 @@ func (handler *Handler) crossSiteRequestAllowed(request *http.Request) bool {
 }
 
 func (handler *Handler) originAllowed(request *http.Request) bool {
-	origin := request.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-	parsed, err := url.Parse(origin)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return false
-	}
-	if strings.EqualFold(parsed.Host, request.Host) {
-		scheme := "http"
-		if request.TLS != nil {
-			scheme = "https"
-		} else if access.IsTrustedProxy(request, handler.config.TrustedProxies) {
-			forwarded := strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")
-			if len(forwarded) > 0 {
-				candidate := strings.TrimSpace(forwarded[len(forwarded)-1])
-				if candidate == "http" || candidate == "https" {
-					scheme = candidate
-				}
-			}
-		}
-		if parsed.Scheme == scheme {
-			return true
-		}
-	}
-	normalizedOrigin := strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
-	for _, allowed := range handler.config.AllowedOrigins {
-		if normalizedOrigin == allowed {
-			return true
-		}
-	}
-	return false
+	return handler.checkOrigin(request).allowed
 }
 
 func (handler *Handler) serveWeb(writer http.ResponseWriter, request *http.Request) {
@@ -431,7 +420,12 @@ func (handler *Handler) SetWeb(web http.Handler) {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status          int
+	reason          string
+	clientIP        string
+	peerIP          string
+	origin          originDecision
+	originEvaluated bool
 }
 
 func (writer *statusWriter) WriteHeader(code int) {
@@ -473,7 +467,7 @@ func requireMethod(writer http.ResponseWriter, request *http.Request, methods ..
 		}
 	}
 	writer.Header().Set("Allow", strings.Join(methods, ", "))
-	writeError(writer, http.StatusMethodNotAllowed, "请求方法不支持")
+	writeErrorReason(writer, http.StatusMethodNotAllowed, "请求方法不支持", "method_not_allowed")
 	return false
 }
 

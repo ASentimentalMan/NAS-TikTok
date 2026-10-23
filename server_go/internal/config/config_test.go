@@ -29,8 +29,46 @@ func TestFromLookupUsesRelativeSameOriginAPIByDefault(t *testing.T) {
 	if cfg.PublicAPIBase != "/app/api" {
 		t.Fatalf("PublicAPIBase = %q", cfg.PublicAPIBase)
 	}
+	if cfg.LogLevel != "info" {
+		t.Fatalf("default LogLevel = %q, want info", cfg.LogLevel)
+	}
 	if len(cfg.AllowedIPs) != 0 || len(cfg.TrustedProxies) != 0 {
 		t.Fatalf("optional IP configuration defaults = allowed:%v trusted:%v, want empty", cfg.AllowedIPs, cfg.TrustedProxies)
+	}
+}
+
+func TestFromLookupValidatesLogLevel(t *testing.T) {
+	base := map[string]string{"ACCOUNT": "owner", "PASSWORD": "pw", "JWT_SECRET": strings.Repeat("k", 32)}
+	for _, test := range []struct {
+		value string
+		want  string
+	}{
+		{value: "", want: "info"},
+		{value: "info", want: "info"},
+		{value: "DEBUG", want: "debug"},
+		{value: "off", want: "off"},
+	} {
+		values := make(map[string]string, len(base)+1)
+		for key, value := range base {
+			values[key] = value
+		}
+		values["LOG_LEVEL"] = test.value
+		cfg, err := FromLookup(lookup(values))
+		if err != nil {
+			t.Fatalf("LOG_LEVEL=%q: %v", test.value, err)
+		}
+		if cfg.LogLevel != test.want {
+			t.Errorf("LOG_LEVEL=%q parsed as %q, want %q", test.value, cfg.LogLevel, test.want)
+		}
+	}
+
+	values := make(map[string]string, len(base)+1)
+	for key, value := range base {
+		values[key] = value
+	}
+	values["LOG_LEVEL"] = "verbose"
+	if _, err := FromLookup(lookup(values)); err == nil {
+		t.Fatal("unsupported LOG_LEVEL was accepted")
 	}
 }
 

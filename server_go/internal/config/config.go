@@ -39,6 +39,7 @@ type Config struct {
 	SessionLimit     int
 	CaptchaRateLimit int
 	LoginRateLimit   int
+	LogLevel         string
 }
 
 func Load() (Config, error) {
@@ -89,6 +90,16 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 			return 0, fmt.Errorf("%s must be a positive integer", key)
 		}
 		return parsed, nil
+	}
+
+	logLevel := strings.ToLower(get("LOG_LEVEL"))
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	switch logLevel {
+	case "info", "debug", "off":
+	default:
+		return Config{}, errors.New("LOG_LEVEL must be info, debug, or off")
 	}
 
 	allowIPv6, err := boolean("ALLOW_IPv6", false)
@@ -255,6 +266,7 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		SessionLimit:     sessionLimit,
 		CaptchaRateLimit: captchaRateLimit,
 		LoginRateLimit:   loginRateLimit,
+		LogLevel:         logLevel,
 	}, nil
 }
 

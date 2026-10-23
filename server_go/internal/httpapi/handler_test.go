@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -332,14 +334,14 @@ func TestTrustedHTTPSProxySupportsLoginSessionAndLogout(t *testing.T) {
 	handler.config.AllowedOrigins = nil
 	handler.config.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 	proxyHeaders := http.Header{
-		"Origin":            []string{"https://nas.example.test"},
+		"Origin":            []string{"https://nas.example.test:63000"},
 		"X-Forwarded-Proto": []string{"https"},
 	}
-	const host = "nas.example.test"
+	const host = "nas.example.test:63000"
 	const remote = "127.0.0.1:1234"
 
 	captchaResponse := invokeWithHost(handler, http.MethodGet, "/api/captcha", nil, proxyHeaders, host, remote)
-	if captchaResponse.Code != http.StatusOK || captchaResponse.Header().Get("Access-Control-Allow-Origin") != "https://nas.example.test" {
+	if captchaResponse.Code != http.StatusOK || captchaResponse.Header().Get("Access-Control-Allow-Origin") != "https://nas.example.test:63000" {
 		t.Fatalf("trusted-proxy captcha = %d headers=%v body=%q", captchaResponse.Code, captchaResponse.Header(), captchaResponse.Body.String())
 	}
 	var challenge captcha.Response
@@ -375,6 +377,334 @@ func TestTrustedHTTPSProxySupportsLoginSessionAndLogout(t *testing.T) {
 	if revoked.Code != http.StatusUnauthorized {
 		t.Fatalf("session after trusted-proxy logout = %d, want unauthorized", revoked.Code)
 	}
+}
+
+func TestDirectHTTPOriginWithNonStandardPortWithoutCORSOrigins(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.AllowedOrigins = nil
+	response := invokeWithHost(handler, http.MethodGet, "/api/captcha", nil,
+		http.Header{"Origin": []string{"http://nas.example.test:63000"}},
+		"nas.example.test:63000", "192.0.2.10:1234")
+	if response.Code != http.StatusOK {
+		t.Fatalf("direct HTTP same-origin captcha = %d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestDebugOriginLogRetainsAutomaticFailureWhenCORSAllows(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.LogLevel = "debug"
+	handler.config.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	handler.config.AllowedOrigins = []string{"https://nas.example.test:63000"}
+	logs := captureRequestLogs(handler)
+	headers := http.Header{
+		"Origin":            []string{"https://nas.example.test:63000"},
+		"X-Forwarded-Proto": []string{"http"},
+	}
+	response := invokeWithHost(handler, http.MethodGet, "/api/captcha", nil, headers,
+		"nas.example.test:63000", "127.0.0.1:1234")
+	if response.Code != http.StatusOK {
+		t.Fatalf("configured Origin fallback status = %d body=%q", response.Code, response.Body.String())
+	}
+	for _, want := range []string{
+		"same_origin=false", "same_origin_reason=origin_scheme_mismatch",
+		"allowed_via=configured_origin", "origin_allowed=true", `origin_port="63000"`,
+		`request_port="63000"`, "request_scheme=http",
+		"proxy_trusted=true", "x_forwarded_proto_present=true", "x_forwarded_proto_used=true",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("debug Origin log lacks %q: %s", want, logs.String())
+		}
+	}
+
+	logs.Reset()
+	handler.config.AllowedOrigins = nil
+	response = invokeWithHost(handler, http.MethodGet, "/api/captcha", nil, headers,
+		"nas.example.test:63000", "127.0.0.1:1234")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unconfigured Origin fallback status = %d, want 403", response.Code)
+	}
+	for _, want := range []string{"same_origin=false", "same_origin_reason=origin_scheme_mismatch", "allowed_via=none", "origin_allowed=false"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("rejected Origin log lacks %q: %s", want, logs.String())
+		}
+	}
+}
+
+func TestDebugOriginLogDistinguishesHostPortLossAndUntrustedForwardedProto(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.LogLevel = "debug"
+	handler.config.AllowedOrigins = nil
+	handler.config.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	logs := captureRequestLogs(handler)
+
+	response := invokeWithHost(handler, http.MethodGet, "/api/captcha", nil, http.Header{
+		"Origin":            []string{"https://nas.example.test:63000"},
+		"X-Forwarded-Proto": []string{"https"},
+	}, "nas.example.test", "127.0.0.1:1234")
+	if response.Code != http.StatusForbidden || !strings.Contains(logs.String(), "same_origin_reason=origin_host_mismatch") ||
+		!strings.Contains(logs.String(), `origin_port="63000"`) || !strings.Contains(logs.String(), `request_port=""`) {
+		t.Fatalf("Host port loss response/log = %d %s", response.Code, logs.String())
+	}
+
+	logs.Reset()
+	response = invokeWithHost(handler, http.MethodGet, "/api/captcha", nil, http.Header{
+		"Origin":            []string{"https://nas.example.test:63000"},
+		"X-Forwarded-Proto": []string{"https"},
+		"X-Forwarded-Host":  []string{"nas.example.test:63000"},
+	}, "nas.example.test:63000", "192.0.2.10:1234")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("untrusted forwarded proto status = %d, want 403", response.Code)
+	}
+	for _, want := range []string{
+		"same_origin_reason=origin_scheme_mismatch", "proxy_trusted=false",
+		"x_forwarded_proto_present=true", "x_forwarded_proto_used=false",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("untrusted proxy log lacks %q: %s", want, logs.String())
+		}
+	}
+}
+
+func TestInfoLogsOnlyLoginAttemptsAndLogsEachOnce(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.LogLevel = "info"
+	logs := captureRequestLogs(handler)
+
+	staticRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticRoot, "index.html"), []byte("index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler.SetWeb(web.New(config.Config{StaticRoot: staticRoot, PublicAPIBase: "/api"}))
+	if response := invoke(handler, http.MethodGet, "/", nil, nil, "127.0.0.1:1234"); response.Code != http.StatusOK {
+		t.Fatalf("static page status = %d", response.Code)
+	}
+	if response := invoke(handler, http.MethodGet, "/api/captcha", nil, nil, "127.0.0.1:1234"); response.Code != http.StatusOK {
+		t.Fatalf("captcha status = %d", response.Code)
+	}
+	videoPath := filepath.Join(handler.catalog.RootPath(), "clip.mp4")
+	if err := os.WriteFile(videoPath, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rangeResponse := invoke(handler, http.MethodGet, "/api/stream/clip.mp4", nil,
+		http.Header{"Range": []string{"bytes=0-2"}}, "127.0.0.1:1234", authenticatedCookie(t, handler))
+	if rangeResponse.Code != http.StatusPartialContent || logs.Len() != 0 {
+		t.Fatalf("Range request = %d, info logs=%q; want 206 and no log", rangeResponse.Code, logs.String())
+	}
+
+	success := loginWithFreshCaptcha(t, handler, "127.0.0.1:1234", "owner", "correct")
+	if success.Code != http.StatusOK || strings.Count(logs.String(), "\n") != 1 || !strings.Contains(logs.String(), "event=login_success") {
+		t.Fatalf("success login/log = %d %q; want one login_success line", success.Code, logs.String())
+	}
+
+	logs.Reset()
+	failure := loginWithFreshCaptcha(t, handler, "127.0.0.1:1234", "owner", "password-sentinel")
+	if failure.Code != http.StatusUnauthorized || strings.Count(logs.String(), "\n") != 1 ||
+		!strings.Contains(logs.String(), "event=login_failed") || !strings.Contains(logs.String(), "reason=credentials_invalid") ||
+		strings.Contains(logs.String(), "password-sentinel") {
+		t.Fatalf("failed login/log = %d %q", failure.Code, logs.String())
+	}
+
+	logs.Reset()
+	badCaptcha := loginWithInvalidCaptcha(t, handler, "127.0.0.1:1234", "owner", "correct")
+	if badCaptcha.Code != http.StatusBadRequest || strings.Count(logs.String(), "\n") != 1 || !strings.Contains(logs.String(), "reason=captcha_invalid") {
+		t.Fatalf("invalid captcha/log = %d %q", badCaptcha.Code, logs.String())
+	}
+}
+
+func TestInfoLoginRecognitionUsesConfiguredAPIPath(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		basePath    string
+		requestPath string
+		wantStatus  int
+		wantLogin   bool
+	}{
+		{name: "root login", requestPath: "/api/logIn", wantStatus: http.StatusForbidden, wantLogin: true},
+		{name: "prefixed login", basePath: "/photos", requestPath: "/photos/api/logIn", wantStatus: http.StatusForbidden, wantLogin: true},
+		{name: "missing prefix is not login", basePath: "/photos", requestPath: "/api/logIn", wantStatus: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newLoginTestHandler(t, 10)
+			handler.config.LogLevel = "info"
+			handler.config.BasePath = test.basePath
+			handler.config.AllowedOrigins = nil
+			logs := captureRequestLogs(handler)
+
+			response := invokeWithHost(handler, http.MethodPost, test.requestPath, nil,
+				http.Header{"Origin": []string{"https://attacker.example.test"}},
+				"nas.example.test", "192.0.2.10:1234")
+			if response.Code != test.wantStatus {
+				t.Fatalf("POST %s status = %d, want %d", test.requestPath, response.Code, test.wantStatus)
+			}
+			if test.wantLogin {
+				if strings.Count(logs.String(), "\n") != 1 || !strings.Contains(logs.String(), "event=login_failed") {
+					t.Fatalf("POST %s logs = %q, want exactly one login_failed event", test.requestPath, logs.String())
+				}
+			} else if logs.Len() != 0 {
+				t.Fatalf("POST %s was not a configured login route but logged %q", test.requestPath, logs.String())
+			}
+		})
+	}
+}
+
+func TestInfoLogsEarlyLoginRejectionsAndRateLimitOnce(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.LogLevel = "info"
+	handler.config.AllowedOrigins = nil
+	logs := captureRequestLogs(handler)
+	response := invokeWithHost(handler, http.MethodPost, "/api/logIn", []byte("password-sentinel"), http.Header{
+		"Origin": []string{"https://attacker.example.test"},
+	}, "nas.example.test", "192.0.2.10:1234")
+	if response.Code != http.StatusForbidden || strings.Count(logs.String(), "\n") != 1 ||
+		!strings.Contains(logs.String(), "reason=origin_host_mismatch") || strings.Contains(logs.String(), "password-sentinel") {
+		t.Fatalf("Origin-rejected login/log = %d %q", response.Code, logs.String())
+	}
+
+	logs.Reset()
+	handler.config.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
+	response = invokeWithHost(handler, http.MethodPost, "/api/logIn", nil, nil,
+		"nas.example.test", "192.0.2.10:1234")
+	if response.Code != http.StatusForbidden || strings.Count(logs.String(), "\n") != 1 || !strings.Contains(logs.String(), "reason=ip_not_allowed") {
+		t.Fatalf("IP-rejected login/log = %d %q", response.Code, logs.String())
+	}
+
+	rateLimited := newLoginTestHandler(t, 1)
+	rateLimited.config.LogLevel = "info"
+	rateLogs := captureRequestLogs(rateLimited)
+	first := loginWithFreshCaptcha(t, rateLimited, "127.0.0.1:1234", "owner", "wrong-password")
+	if first.Code != http.StatusUnauthorized {
+		t.Fatalf("first login status = %d", first.Code)
+	}
+	rateLogs.Reset()
+	second := loginWithFreshCaptcha(t, rateLimited, "127.0.0.1:1234", "owner", "correct")
+	if second.Code != http.StatusTooManyRequests || strings.Count(rateLogs.String(), "\n") != 1 || !strings.Contains(rateLogs.String(), "reason=login_rate_limited") {
+		t.Fatalf("rate-limited login/log = %d %q", second.Code, rateLogs.String())
+	}
+}
+
+func TestDebugLogsUseFixedRoutesAndDoNotLeakRequestData(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.LogLevel = "debug"
+	handler.config.BasePath = "/photos"
+	logs := captureRequestLogs(handler)
+	requestBody := []byte("password-sentinel captcha-sentinel")
+	response := invokeWithHost(handler, http.MethodPost,
+		"/photos/api/stream/private-media-sentinel.mp4?token=query-sentinel", requestBody,
+		http.Header{
+			"Origin":        []string{"https://attacker.example.test\r\nforged-field"},
+			"Cookie":        []string{"session=cookie-sentinel"},
+			"Authorization": []string{"Bearer jwt-sentinel"},
+		}, "nas.example.test", "192.0.2.10:1234")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("malformed Origin status = %d", response.Code)
+	}
+	output := logs.String()
+	for _, forbidden := range []string{
+		"private-media-sentinel", "query-sentinel", "password-sentinel", "captcha-sentinel",
+		"cookie-sentinel", "jwt-sentinel", "forged-field",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Errorf("log contains sensitive marker %q: %q", forbidden, output)
+		}
+	}
+	if !strings.Contains(output, `route="/api/stream/*"`) || strings.Count(output, "\n") != 1 || strings.Contains(output, "\r") {
+		t.Fatalf("unexpected sanitized route/log line: %q", output)
+	}
+
+	for _, test := range []struct{ path, want string }{
+		{"/photos/api/logIn", "/api/logIn"},
+		{"/photos/assets/app.js", "/assets/*"},
+		{"/photos/env.js", "/env.js"},
+		{"/photos/healthz", "/healthz"},
+		{"/photos/private/unknown", "other"},
+	} {
+		if got := requestRoute(test.path, "/photos"); got != test.want {
+			t.Errorf("requestRoute(%q) = %q, want %q", test.path, got, test.want)
+		}
+	}
+}
+
+func TestDebugClassifiesRootAndPartialMediaScanFailures(t *testing.T) {
+	t.Run("root scan", func(t *testing.T) {
+		handler := newLoginTestHandler(t, 10)
+		handler.config.LogLevel = "debug"
+		logs := captureRequestLogs(handler)
+		cookie := authenticatedCookie(t, handler)
+		if err := handler.catalog.Close(); err != nil {
+			t.Fatal(err)
+		}
+		response := invoke(handler, http.MethodGet, "/api/list?type=image", nil, nil, "127.0.0.1:1234", cookie)
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(logs.String(), "reason=media_root_unreadable") {
+			t.Fatalf("root scan status/log = %d %q", response.Code, logs.String())
+		}
+	})
+
+	t.Run("partial child scan", func(t *testing.T) {
+		handler := newLoginTestHandler(t, 10)
+		handler.config.LogLevel = "debug"
+		logs := captureRequestLogs(handler)
+		cookie := authenticatedCookie(t, handler)
+		root := handler.catalog.RootPath()
+		child := filepath.Join(root, "unreadable")
+		if err := os.Mkdir(child, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(child, "private-name.jpg"), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(child, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(child, 0o700) })
+		if _, err := os.ReadDir(child); err == nil {
+			t.Skip("process can still read mode-000 directories")
+		}
+		response := invoke(handler, http.MethodGet, "/api/list?type=image", nil, nil, "127.0.0.1:1234", cookie)
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(logs.String(), "reason=media_scan_partial") ||
+			strings.Contains(logs.String(), "private-name.jpg") || strings.Contains(logs.String(), root) {
+			t.Fatalf("partial scan status/log = %d %q", response.Code, logs.String())
+		}
+	})
+}
+
+func TestMediaScanReasonClassifiesPermissionAndUnknownErrors(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "root permission", err: errors.Join(catalog.ErrRootScan, os.ErrPermission), want: "media_root_permission_denied"},
+		{name: "root unreadable", err: catalog.ErrRootScan, want: "media_root_unreadable"},
+		{name: "partial scan", err: catalog.ErrPartialScan, want: "media_scan_partial"},
+		{name: "permission", err: os.ErrPermission, want: "media_permission_denied"},
+		{name: "unknown", err: errors.New("opaque failure"), want: "media_scan_failed"},
+		{name: "deadline", err: context.DeadlineExceeded, want: "media_scan_timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := mediaScanReason(test.err); got != test.want {
+				t.Fatalf("mediaScanReason() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestLogLevelOffSuppressesRequestsAndLogin(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.LogLevel = "off"
+	logs := captureRequestLogs(handler)
+	_ = invoke(handler, http.MethodGet, "/api/captcha", nil, nil, "127.0.0.1:1234")
+	_ = invokeWithHost(handler, http.MethodPost, "/api/logIn", []byte("body-sentinel"), http.Header{
+		"Origin": []string{"https://attacker.example.test"},
+	}, "nas.example.test", "192.0.2.10:1234")
+	if logs.Len() != 0 {
+		t.Fatalf("LOG_LEVEL=off emitted logs: %q", logs.String())
+	}
+}
+
+func captureRequestLogs(handler *Handler) *bytes.Buffer {
+	var output bytes.Buffer
+	handler.logger = log.New(&output, "", log.LstdFlags)
+	return &output
 }
 
 func TestHealthzSupportsRootAndDeploymentPrefix(t *testing.T) {
@@ -623,7 +953,7 @@ func newLoginTestHandler(t *testing.T, loginRateLimit int) *Handler {
 	t.Cleanup(func() { _ = media.Close() })
 	cfg := config.Config{
 		PublicAPIBase: "/api", Account: "owner", Password: "correct", JWTSecret: []byte(strings.Repeat("k", 32)),
-		SessionTTL: time.Minute, CaptchaTTL: time.Minute, CaptchaLimit: 64, SessionLimit: 4,
+		SessionTTL: time.Minute, CaptchaTTL: time.Minute, CaptchaLimit: 64, SessionLimit: 4, LogLevel: "off",
 		CaptchaRateLimit: 20, LoginRateLimit: loginRateLimit, AllowedOrigins: []string{"https://ui.example.test"},
 	}
 	captchas, err := captcha.New(cfg.CaptchaTTL, cfg.CaptchaLimit)

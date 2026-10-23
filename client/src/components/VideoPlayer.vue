@@ -42,6 +42,10 @@ const touched = ref(false);
 const touchedTimeout = ref(null);
 let transitionResetTimeout = null;
 let progressSeekTimeout = null;
+let authCheckController = null;
+let authCheckTimer = null;
+let authCheckInFlight = false;
+let componentUnmounted = false;
 const onTouchStart = () => {
   touched.value = true;
   if (touchedTimeout.value) {
@@ -673,15 +677,31 @@ const handleVideoError = async (event) => {
   if (event.type !== "error") return;
   isLoading.value = false;
   state.status = SlideItemPlayStatus.Stop;
+  if (authCheckInFlight || componentUnmounted) return;
+
+  authCheckInFlight = true;
+  const controller = new AbortController();
+  authCheckController = controller;
+  let timedOut = false;
+  authCheckTimer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 5000);
+
   try {
     const response = await fetch(props.video.url, {
       method: "HEAD",
       credentials: "include",
+      signal: controller.signal,
     });
     if (response.status === 401) {
       videoRef.value?.pause();
-      localStorage.removeItem("token");
-      router.replace("/login");
+      try {
+        localStorage.removeItem("token");
+      } catch {
+        // The HttpOnly session cookie is authoritative.
+      }
+      void router.replace("/login");
       return;
     }
     const messages = {
@@ -694,7 +714,17 @@ const handleVideoError = async (event) => {
         (response.ok ? "视频加载失败，请检查文件格式或稍后重试" : "视频服务暂不可用")
     );
   } catch {
-    toastRef.value?.show("视频网络异常，请检查连接后重试");
+    if (componentUnmounted) return;
+    toastRef.value?.show(
+      timedOut
+        ? "登录状态确认超时，未判定为登录失效。"
+        : "视频网络异常，请检查连接后重试"
+    );
+  } finally {
+    if (authCheckTimer !== null) window.clearTimeout(authCheckTimer);
+    authCheckTimer = null;
+    if (authCheckController === controller) authCheckController = null;
+    authCheckInFlight = false;
   }
 };
 
@@ -776,6 +806,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  componentUnmounted = true;
+  if (authCheckTimer !== null) window.clearTimeout(authCheckTimer);
+  authCheckTimer = null;
+  authCheckController?.abort();
+  authCheckController = null;
   pause(); // Ensure video is paused on unmount
   // 清理长按定时器
   if (videoState.longPressTimer) {

@@ -90,6 +90,8 @@ Vite 会把 `/api` 请求转发到后端。打开 [http://127.0.0.1:5173](http:/
 
 Go 服务常用配置：`LISTEN_HOST`（默认 `0.0.0.0`）、`LISTEN_PORT`（默认 `3000`，未设置时也可由 `VITE_API_PORT` 提供）、`MEDIA_ROOT`（默认 `server/statics`）、`STATIC_ROOT`（默认 `client/dist`）、`APP_URL_PREFIX`（可选部署路径）、`API_BASE`（可选前端 API 基址，默认同源 `/api`）、`SSL`（默认 `false`）、`TLS_CERT_FILE` 和 `TLS_KEY_FILE`（HTTPS 证书路径，默认 `certs/fullchain.pem` 与 `certs/privkey.pem`）、`ALLOWED_IPS`（默认未设置或为空；只控制来源 IP 白名单，空值不限制来源 IP，不影响账号密码登录或其他安全校验；填写 IP/CIDR 后仅允许匹配来源）、`ALLOW_IPv6`、`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 与 `JWT_EXPIRE`（默认 1200 秒）。`MEDIA_ROOT` 和 `STATIC_ROOT` 的相对默认路径以 Go 进程的当前工作目录为基准；启动时会解析为绝对路径。本地示例从 `server_go/` 启动，因此显式把媒体目录设为 `../statics`；若由 Go 服务托管前端，默认静态目录会是 `server_go/client/dist`。Docker 镜像已将这两个目录设为绝对路径。`COOKIE_SAME_SITE` 默认 `lax`，`COOKIE_SECURE` 默认跟随 `SSL`。跨站 Cookie 需要在 `CORS_ORIGINS` 中列出前端来源，并设置 `COOKIE_SAME_SITE=none`、`COOKIE_SECURE=true`；浏览器跨站使用还需要 HTTPS。只有配置了 `TRUSTED_PROXIES` 的代理网段，服务才会信任代理转发的客户端 IP 头。`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 必须在运行时配置；签名密钥至少 32 字节。启用 HTTPS 时，证书和私钥必须可读。根路径部署无需额外配置；部署到子路径时，运行时设置 `APP_URL_PREFIX`，构建时设置匹配的 `VITE_BASE_URL`（例如 `/photos/`）。
 
+`LOG_LEVEL` 默认为 `info`，仅记录登录成功或失败；`debug` 记录脱敏后的请求及来源诊断；`off` 关闭常规访问和登录日志，但不隐藏配置或启动失败。同源 HTTPS 反向代理无需默认放宽 `CORS_ORIGINS`：Go 收到的 Host 必须保留外部主机和端口；如果 Go 上游连接使用 HTTP，`TRUSTED_PROXIES` 必须匹配 Go 实际看到的直接代理地址，且代理必须传递真实外部协议。多层代理应根据实际 TLS 终止位置核对 `X-Forwarded-Proto`。
+
 ### 正式部署
 
 ---

@@ -69,7 +69,9 @@ func (application *App) Run(ctx context.Context) error {
 	if application.config.SSL {
 		protocol = "https"
 	}
-	log.Printf("starting %s on %s://%s", application.config.AppName, protocol, application.server.Addr)
+	if application.config.LogLevel == "debug" {
+		log.Printf("event=server_start protocol=%s address=%s", protocol, application.server.Addr)
+	}
 
 	select {
 	case err := <-result:
