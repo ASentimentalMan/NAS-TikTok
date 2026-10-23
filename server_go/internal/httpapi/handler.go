@@ -49,20 +49,25 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	}()
 	writer = status
 	apiPath := handler.config.BasePath + "/api"
-	if request.URL.Path == apiPath || strings.HasPrefix(request.URL.Path, apiPath+"/") {
+	requestPath := request.URL.Path
+	apiRequest := requestPath == apiPath || strings.HasPrefix(requestPath, apiPath+"/")
+	if apiRequest {
 		writer.Header().Set("Cache-Control", "no-store")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 	}
 
-	requestPath := request.URL.Path
 	healthPath := requestPath == "/healthz" || (handler.config.BasePath != "" && requestPath == handler.config.BasePath+"/healthz")
 	address, err := access.ClientIP(request, handler.config.TrustedProxies)
 	if err != nil || (!access.Allowed(address, handler.config.AllowedIPs) && !(healthPath && address.IsLoopback())) {
 		writeError(writer, http.StatusForbidden, "禁止访问")
 		return
 	}
-	if !handler.applyCORS(writer, request) {
-		return
+	if healthPath || apiRequest || request.Method == http.MethodOptions {
+		if !handler.applyCORS(writer, request) {
+			return
+		}
+	} else {
+		handler.applyCORSIfAllowed(writer, request)
 	}
 
 	if healthPath {
@@ -78,7 +83,7 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.options(writer, request, apiPath)
 		return
 	}
-	if requestPath == apiPath || strings.HasPrefix(requestPath, apiPath+"/") {
+	if apiRequest {
 		if !handler.crossSiteRequestAllowed(request) {
 			writeError(writer, http.StatusForbidden, "请求来源不允许")
 			return
@@ -274,11 +279,24 @@ func (handler *Handler) applyCORS(writer http.ResponseWriter, request *http.Requ
 		writeError(writer, http.StatusForbidden, "请求来源不允许")
 		return false
 	}
+	handler.setCORSHeaders(writer, origin)
+	return true
+}
+
+func (handler *Handler) applyCORSIfAllowed(writer http.ResponseWriter, request *http.Request) {
+	origin := request.Header.Get("Origin")
+	if origin == "" || !handler.originAllowed(request) {
+		writer.Header().Add("Vary", "Origin")
+		return
+	}
+	handler.setCORSHeaders(writer, origin)
+}
+
+func (handler *Handler) setCORSHeaders(writer http.ResponseWriter, origin string) {
 	writer.Header().Set("Access-Control-Allow-Origin", origin)
 	writer.Header().Set("Access-Control-Allow-Credentials", "true")
 	writer.Header().Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range")
 	writer.Header().Add("Vary", "Origin")
-	return true
 }
 
 func (handler *Handler) options(writer http.ResponseWriter, request *http.Request, apiPath string) {

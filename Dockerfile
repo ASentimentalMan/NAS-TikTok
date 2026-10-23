@@ -32,7 +32,6 @@ ENV APP_NAME=NAS-TikTok \
     LISTEN_PORT=3000 \
     SSL=false \
     ALLOW_IPv6=false \
-    ALLOWED_IPS=192.168.0.0/16,172.17.0.0/16 \
     MEDIA_ROOT=/workspace/statics \
     STATIC_ROOT=/workspace/client/dist
 

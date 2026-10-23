@@ -88,7 +88,7 @@ npm run dev
 
 Vite 会把 `/api` 请求转发到后端。打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)，使用账号 `demo`、密码 `change-me` 登录。若终端没有从项目根目录启动，请先切换到克隆出的 `NAS-TikTok` 目录。示例密钥仅用于本机开发；共享或部署前请换成至少 32 字节的随机密钥，不要提交真实凭据。
 
-Go 服务常用配置：`LISTEN_HOST`（默认 `0.0.0.0`）、`LISTEN_PORT`（默认 `3000`，未设置时也可由 `VITE_API_PORT` 提供）、`MEDIA_ROOT`（默认 `server/statics`）、`STATIC_ROOT`（默认 `client/dist`）、`APP_URL_PREFIX`（可选部署路径）、`API_BASE`（可选前端 API 基址，默认同源 `/api`）、`SSL`（默认 `false`）、`TLS_CERT_FILE` 和 `TLS_KEY_FILE`（HTTPS 证书路径，默认 `certs/fullchain.pem` 与 `certs/privkey.pem`）、`ALLOWED_IPS`、`ALLOW_IPv6`、`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 与 `JWT_EXPIRE`（默认 1200 秒）。`MEDIA_ROOT` 和 `STATIC_ROOT` 的相对默认路径以 Go 进程的当前工作目录为基准；启动时会解析为绝对路径。本地示例从 `server_go/` 启动，因此显式把媒体目录设为 `../statics`；若由 Go 服务托管前端，默认静态目录会是 `server_go/client/dist`。Docker 镜像已将这两个目录设为绝对路径。`COOKIE_SAME_SITE` 默认 `lax`，`COOKIE_SECURE` 默认跟随 `SSL`。跨站 Cookie 需要在 `CORS_ORIGINS` 中列出前端来源，并设置 `COOKIE_SAME_SITE=none`、`COOKIE_SECURE=true`；浏览器跨站使用还需要 HTTPS。只有配置了 `TRUSTED_PROXIES` 的代理网段，服务才会信任代理转发的客户端 IP 头。`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 必须在运行时配置；签名密钥至少 32 字节。启用 HTTPS 时，证书和私钥必须可读。根路径部署无需额外配置；部署到子路径时，运行时设置 `APP_URL_PREFIX`，构建时设置匹配的 `VITE_BASE_URL`（例如 `/photos/`）。
+Go 服务常用配置：`LISTEN_HOST`（默认 `0.0.0.0`）、`LISTEN_PORT`（默认 `3000`，未设置时也可由 `VITE_API_PORT` 提供）、`MEDIA_ROOT`（默认 `server/statics`）、`STATIC_ROOT`（默认 `client/dist`）、`APP_URL_PREFIX`（可选部署路径）、`API_BASE`（可选前端 API 基址，默认同源 `/api`）、`SSL`（默认 `false`）、`TLS_CERT_FILE` 和 `TLS_KEY_FILE`（HTTPS 证书路径，默认 `certs/fullchain.pem` 与 `certs/privkey.pem`）、`ALLOWED_IPS`（默认未设置或为空；只控制来源 IP 白名单，空值不限制来源 IP，不影响账号密码登录或其他安全校验；填写 IP/CIDR 后仅允许匹配来源）、`ALLOW_IPv6`、`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 与 `JWT_EXPIRE`（默认 1200 秒）。`MEDIA_ROOT` 和 `STATIC_ROOT` 的相对默认路径以 Go 进程的当前工作目录为基准；启动时会解析为绝对路径。本地示例从 `server_go/` 启动，因此显式把媒体目录设为 `../statics`；若由 Go 服务托管前端，默认静态目录会是 `server_go/client/dist`。Docker 镜像已将这两个目录设为绝对路径。`COOKIE_SAME_SITE` 默认 `lax`，`COOKIE_SECURE` 默认跟随 `SSL`。跨站 Cookie 需要在 `CORS_ORIGINS` 中列出前端来源，并设置 `COOKIE_SAME_SITE=none`、`COOKIE_SECURE=true`；浏览器跨站使用还需要 HTTPS。只有配置了 `TRUSTED_PROXIES` 的代理网段，服务才会信任代理转发的客户端 IP 头。`ACCOUNT`、`PASSWORD`、`JWT_SECRET` 必须在运行时配置；签名密钥至少 32 字节。启用 HTTPS 时，证书和私钥必须可读。根路径部署无需额外配置；部署到子路径时，运行时设置 `APP_URL_PREFIX`，构建时设置匹配的 `VITE_BASE_URL`（例如 `/photos/`）。
 
 ### 正式部署
 
@@ -116,7 +116,7 @@ docker build -t nas-tiktok:local .
 
 `build.sh` 从脚本所在的当前 Git 工作区构建，不会拉取或切换分支；镜像会记录源码 Commit，工作区有未提交改动时标记为 `dirty`。部署前在 `$HOME/workspace/pm2/NAS-TikTok/.env` 创建 Docker `KEY=value` 格式的运行时配置文件，至少填入 `ACCOUNT`、`PASSWORD` 和不少于 32 字节的 `JWT_SECRET`。需要 HTTPS 时设置 `SSL=true`，并将 `fullchain.pem` 与 `privkey.pem` 放在同目录的 `certs/` 下；媒体放入 `statics/`。根路径部署无需额外设置；子路径部署还需在运行时 `.env` 中设置 `APP_URL_PREFIX=photos`，并以 `VITE_BASE_URL=/photos/ bash ./build.sh` 构建匹配的前端。运行 `bash ./build.sh` 后选择构建、部署或构建并部署。部署会让你选择 `host` 或 `bridge` 网络和服务端口；若没有旧容器且系统提供 `ss`，脚本会先尽力检查 TCP 端口是否已被本机进程占用，Docker 启动阶段仍可能发现端口冲突。它会询问 `.env` 是否启用 HTTPS；若使用默认证书路径，会检查证书和私钥文件存在、非空且当前用户可读，自定义路径则由容器启动健康检查验证。媒体与证书目录以只读方式挂载。脚本先创建候选容器，启动后等待最多 90 秒的容器内 loopback 健康检查；只有健康后才移除旧容器，失败时会尝试恢复旧容器原先的运行状态。健康检查访问 `APP_URL_PREFIX` 下的 `/healthz`，HTTPS 探测会跳过本地证书信任校验。Docker 部署尚未验证。
 
-`host` 网络下服务直接监听 NAS 端口；`bridge` 网络下脚本会发布所选端口。Bridge 网络通常只能看到 Docker 网桥一侧的来源地址；若需通过反向代理识别客户端 IP，请按实际拓扑配置可信代理。容器的默认 `ALLOWED_IPS` 为 `192.168.0.0/16,172.17.0.0/16`，部署到其他网段时应在 `.env` 中调整。
+`host` 网络下服务直接监听 NAS 端口；`bridge` 网络下脚本会发布所选端口。Bridge 网络通常只能看到 Docker 网桥一侧的来源地址；若需通过反向代理识别客户端 IP，请按实际拓扑配置可信代理。容器默认不限制来源 IP（`ALLOWED_IPS` 未设置或为空）；这不会关闭登录认证或其他安全校验。如需启用白名单，请在 `.env` 中设置逗号分隔的 IP 或 CIDR，并根据应用实际看到的来源地址配置。
 
 如需在另一台 NAS 上离线启动，可在构建机上使用 `docker save` 导出镜像，再在 NAS 上用 `docker load` 导入；镜像构建及导入流程尚未验证。
 

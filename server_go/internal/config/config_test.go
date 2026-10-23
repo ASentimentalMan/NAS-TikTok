@@ -34,6 +34,19 @@ func TestFromLookupUsesRelativeSameOriginAPIByDefault(t *testing.T) {
 	}
 }
 
+func TestFromLookupLeavesAllowedIPsEmptyWhenExplicitlyEmpty(t *testing.T) {
+	cfg, err := FromLookup(lookup(map[string]string{
+		"ACCOUNT": "owner", "PASSWORD": "pw", "JWT_SECRET": strings.Repeat("k", 32),
+		"ALLOWED_IPS": "",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowedIPs) != 0 {
+		t.Fatalf("explicitly empty ALLOWED_IPS = %v, want no configured prefixes", cfg.AllowedIPs)
+	}
+}
+
 func TestFromLookupSelectsDefaultListenHostFromIPv6Setting(t *testing.T) {
 	values := map[string]string{
 		"ACCOUNT": "owner", "PASSWORD": "pw", "JWT_SECRET": strings.Repeat("k", 32),

@@ -231,11 +231,149 @@ func TestIPAllowlistAppliesToPublicRoutes(t *testing.T) {
 	if loopbackHealth.Code != http.StatusOK || loopbackHealth.Body.String() != "ok\n" {
 		t.Fatalf("loopback health response = %d %q", loopbackHealth.Code, loopbackHealth.Body.String())
 	}
+	staticRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticRoot, "index.html"), []byte("index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler.SetWeb(web.New(config.Config{PublicAPIBase: "/api", StaticRoot: staticRoot}))
+	blockedStatic := invoke(handler, http.MethodGet, "/", nil, nil, "192.0.2.55:1234")
+	if blockedStatic.Code != http.StatusForbidden {
+		t.Fatalf("static page ignored IP allowlist: status %d", blockedStatic.Code)
+	}
 	for _, method := range []string{http.MethodHead, http.MethodPost, http.MethodOptions} {
 		response := invoke(handler, method, "/healthz", nil, nil, "127.0.0.1:1234")
 		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodGet {
 			t.Errorf("health method %s response = %d Allow=%q, want method not allowed and GET", method, response.Code, response.Header().Get("Allow"))
 		}
+	}
+}
+
+func TestStaticResourcesDoNotRejectDisallowedOrigins(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	staticRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(staticRoot, "assets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"index.html":     "<html>home</html>",
+		"assets/app.js":  "window.app = true;",
+		"assets/app.css": "body { color: black; }",
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(staticRoot, filepath.FromSlash(name)), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler.SetWeb(web.New(config.Config{PublicAPIBase: "/api", StaticRoot: staticRoot}))
+
+	resources := []string{"/", "/assets/app.js", "/assets/app.css", "/env.js"}
+	scenarios := []struct {
+		name        string
+		origin      string
+		host        string
+		remote      string
+		forwarded   string
+		allowOrigin string
+	}{
+		{name: "no origin", host: "nas.example.test", remote: "192.0.2.10:1234"},
+		{name: "same-origin HTTP", origin: "http://nas.example.test", host: "nas.example.test", remote: "192.0.2.10:1234", allowOrigin: "http://nas.example.test"},
+		{name: "HTTPS origin via untrusted HTTP upstream", origin: "https://nas.example.test", host: "nas.example.test", remote: "192.0.2.10:1234", forwarded: "https"},
+		{name: "disallowed cross-origin", origin: "https://attacker.example.test", host: "nas.example.test", remote: "192.0.2.10:1234"},
+	}
+	for _, resource := range resources {
+		for _, scenario := range scenarios {
+			t.Run(resource+"/"+scenario.name, func(t *testing.T) {
+				headers := make(http.Header)
+				if scenario.origin != "" {
+					headers.Set("Origin", scenario.origin)
+				}
+				if scenario.forwarded != "" {
+					headers.Set("X-Forwarded-Proto", scenario.forwarded)
+				}
+				response := invokeWithHost(handler, http.MethodGet, resource, nil, headers, scenario.host, scenario.remote)
+				if response.Code != http.StatusOK {
+					t.Fatalf("GET %s status = %d, content-type=%q body=%q", resource, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+				}
+				if strings.Contains(response.Header().Get("Content-Type"), "application/json") {
+					t.Fatalf("static response unexpectedly returned JSON: %q", response.Body.String())
+				}
+				if got := response.Header().Get("Access-Control-Allow-Origin"); got != scenario.allowOrigin {
+					t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, scenario.allowOrigin)
+				}
+				if strings.TrimSpace(response.Header().Get("Vary")) == "" || !strings.Contains(response.Header().Get("Vary"), "Origin") {
+					t.Fatalf("Vary = %q, want Origin", response.Header().Get("Vary"))
+				}
+			})
+		}
+	}
+}
+
+func TestAPIRetainsStrictOriginChecksWithUntrustedForwardedHeaders(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	invalid := invokeWithHost(handler, http.MethodGet, "/api/captcha", nil,
+		http.Header{"Origin": []string{"https://attacker.example.test"}}, "nas.example.test", "192.0.2.10:1234")
+	if invalid.Code != http.StatusForbidden || invalid.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("invalid API Origin response = %d headers=%v body=%q", invalid.Code, invalid.Header(), invalid.Body.String())
+	}
+
+	forged := invokeWithHost(handler, http.MethodGet, "/api/captcha", nil, http.Header{
+		"Origin":            []string{"https://nas.example.test"},
+		"X-Forwarded-Proto": []string{"https"},
+		"X-Forwarded-Host":  []string{"nas.example.test"},
+		"X-Forwarded-For":   []string{"127.0.0.1"},
+	}, "nas.example.test", "192.0.2.10:1234")
+	if forged.Code != http.StatusForbidden || forged.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("untrusted forwarded headers bypassed API Origin check: %d headers=%v body=%q", forged.Code, forged.Header(), forged.Body.String())
+	}
+}
+
+func TestTrustedHTTPSProxySupportsLoginSessionAndLogout(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.AllowedOrigins = nil
+	handler.config.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	proxyHeaders := http.Header{
+		"Origin":            []string{"https://nas.example.test"},
+		"X-Forwarded-Proto": []string{"https"},
+	}
+	const host = "nas.example.test"
+	const remote = "127.0.0.1:1234"
+
+	captchaResponse := invokeWithHost(handler, http.MethodGet, "/api/captcha", nil, proxyHeaders, host, remote)
+	if captchaResponse.Code != http.StatusOK || captchaResponse.Header().Get("Access-Control-Allow-Origin") != "https://nas.example.test" {
+		t.Fatalf("trusted-proxy captcha = %d headers=%v body=%q", captchaResponse.Code, captchaResponse.Header(), captchaResponse.Body.String())
+	}
+	var challenge captcha.Response
+	if err := json.Unmarshal(captchaResponse.Body.Bytes(), &challenge); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(loginRequest{
+		Account: "owner", Password: "correct", CodeID: challenge.ID, Code: answerFromDataURI(t, challenge.Data),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginHeaders := proxyHeaders.Clone()
+	loginHeaders.Set("Content-Type", "application/json")
+	loginResponse := invokeWithHost(handler, http.MethodPost, "/api/logIn", payload, loginHeaders, host, remote)
+	if loginResponse.Code != http.StatusOK {
+		t.Fatalf("trusted-proxy login = %d body=%q", loginResponse.Code, loginResponse.Body.String())
+	}
+	cookies := loginResponse.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != session.CookieName || !cookies[0].HttpOnly || cookies[0].Secure || cookies[0].SameSite != http.SameSiteLaxMode || cookies[0].Path != "/api" {
+		t.Fatalf("trusted-proxy session cookie attributes = %#v", cookies)
+	}
+
+	sessionResponse := invokeWithHost(handler, http.MethodGet, "/api/session", nil, proxyHeaders, host, remote, cookies...)
+	if sessionResponse.Code != http.StatusOK {
+		t.Fatalf("trusted-proxy session = %d body=%q", sessionResponse.Code, sessionResponse.Body.String())
+	}
+	logoutResponse := invokeWithHost(handler, http.MethodPost, "/api/logout", nil, proxyHeaders, host, remote, cookies...)
+	if logoutResponse.Code != http.StatusOK {
+		t.Fatalf("trusted-proxy logout = %d body=%q", logoutResponse.Code, logoutResponse.Body.String())
+	}
+	revoked := invokeWithHost(handler, http.MethodGet, "/api/session", nil, nil, host, remote, cookies...)
+	if revoked.Code != http.StatusUnauthorized {
+		t.Fatalf("session after trusted-proxy logout = %d, want unauthorized", revoked.Code)
 	}
 }
 
@@ -417,6 +555,23 @@ func TestSuccessfulLoginResetsFailureStreak(t *testing.T) {
 
 func invoke(handler http.Handler, method, target string, body []byte, headers http.Header, remote string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, target, bytes.NewReader(body))
+	request.RemoteAddr = remote
+	for key, values := range headers {
+		for _, value := range values {
+			request.Header.Add(key, value)
+		}
+	}
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func invokeWithHost(handler http.Handler, method, target string, body []byte, headers http.Header, host, remote string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, target, bytes.NewReader(body))
+	request.Host = host
 	request.RemoteAddr = remote
 	for key, values := range headers {
 		for _, value := range values {

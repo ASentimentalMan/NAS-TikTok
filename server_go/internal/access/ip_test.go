@@ -82,6 +82,9 @@ func TestLoopbackRequiresExplicitAllowlistWhenOneIsConfigured(t *testing.T) {
 	if !Allowed(loopback, nil) {
 		t.Fatal("loopback was rejected when no allowlist is configured")
 	}
+	if !Allowed(loopback, []netip.Prefix{}) {
+		t.Fatal("loopback was rejected when the allowlist is explicitly empty")
+	}
 	if Allowed(loopback, []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}) {
 		t.Fatal("loopback bypassed a configured allowlist")
 	}
