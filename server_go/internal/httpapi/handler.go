@@ -19,6 +19,7 @@ import (
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/captcha"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/config"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/catalog"
+	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/index"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/streaming"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/session"
 )
@@ -29,16 +30,27 @@ type Handler struct {
 	captcha  *captcha.Service
 	sessions *session.Manager
 	catalog  *catalog.Catalog
+	index    mediaIndex
 	stream   *streaming.Handler
 	limiter  *rateLimiter
 	web      http.Handler
 	logger   *log.Logger
 }
 
-func New(cfg config.Config, authenticator *auth.Service, captchas *captcha.Service, sessions *session.Manager, media *catalog.Catalog) *Handler {
+type mediaIndex interface {
+	Sample(context.Context, string) ([]string, bool, error)
+	Reinitialize() (bool, error)
+	RemoveMissing(string) error
+}
+
+func New(cfg config.Config, authenticator *auth.Service, captchas *captcha.Service, sessions *session.Manager, media *catalog.Catalog, mediaIndex mediaIndex) *Handler {
+	var removeMissing func(string) error
+	if mediaIndex != nil {
+		removeMissing = mediaIndex.RemoveMissing
+	}
 	return &Handler{
 		config: cfg, auth: authenticator, captcha: captchas, sessions: sessions,
-		catalog: media, stream: streaming.New(media), limiter: newRateLimiter(),
+		catalog: media, index: mediaIndex, stream: streaming.New(media, removeMissing), limiter: newRateLimiter(),
 		logger: log.Default(),
 	}
 }
@@ -134,6 +146,8 @@ func (handler *Handler) serveAPI(writer http.ResponseWriter, request *http.Reque
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"data": map[string]bool{"authenticated": true}})
+	case requestPath == apiPath+"/reinit":
+		handler.reinitialize(writer, request)
 	case requestPath == apiPath+"/logout":
 		handler.logout(writer, request)
 	case requestPath == apiPath+"/list":
@@ -241,13 +255,33 @@ func (handler *Handler) list(writer http.ResponseWriter, request *http.Request, 
 		writeErrorReason(writer, http.StatusBadRequest, "媒体类型无效", "invalid_media_type")
 		return
 	}
-	items, err := handler.catalog.List(request.Context(), mediaType)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
+	var items []string
+	useIndex := false
+	if handler.index != nil {
+		indexedPaths, ready, err := handler.index.Sample(request.Context(), mediaType)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		writeErrorReason(writer, http.StatusServiceUnavailable, "媒体列表暂时不可用", mediaScanReason(err))
-		return
+		if err != nil {
+			handler.logger.Printf("event=media_index_sample_failed error=%q", err)
+			writeErrorReason(writer, http.StatusServiceUnavailable, "媒体列表暂时不可用", "media_index_unavailable")
+			return
+		}
+		if ready {
+			items = indexedPaths
+			useIndex = true
+		}
+	}
+	if !useIndex {
+		var err error
+		items, err = handler.catalog.List(request.Context(), mediaType)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			writeErrorReason(writer, http.StatusServiceUnavailable, "媒体列表暂时不可用", mediaScanReason(err))
+			return
+		}
 	}
 	urls := make([]string, 0, len(items))
 	for _, item := range items {
@@ -259,6 +293,31 @@ func (handler *Handler) list(writer http.ResponseWriter, request *http.Request, 
 	}
 	writer.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(writer, http.StatusOK, map[string][]string{"data": urls})
+}
+
+func (handler *Handler) reinitialize(writer http.ResponseWriter, request *http.Request) {
+	if !requireMethod(writer, request, http.MethodGet) {
+		return
+	}
+	if _, ok := handler.requestClaims(request); !ok {
+		writeErrorReason(writer, http.StatusUnauthorized, "用户未登录", "authentication_required")
+		return
+	}
+	if handler.index == nil {
+		writeErrorReason(writer, http.StatusServiceUnavailable, "媒体索引暂时不可用", "media_index_unavailable")
+		return
+	}
+	started, err := handler.index.Reinitialize()
+	if errors.Is(err, index.ErrScanInProgress) || (!started && err == nil) {
+		writeErrorReason(writer, http.StatusConflict, "媒体索引初始化正在进行", "media_index_reinitialization_in_progress")
+		return
+	}
+	if err != nil {
+		handler.logger.Printf("event=media_index_reinitialize_failed error=%q", err)
+		writeErrorReason(writer, http.StatusServiceUnavailable, "媒体索引暂时不可用", "media_index_unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, map[string]bool{"ok": true, "started": true})
 }
 
 func (handler *Handler) media(writer http.ResponseWriter, request *http.Request, apiPath string) {
@@ -353,7 +412,7 @@ func (handler *Handler) options(writer http.ResponseWriter, request *http.Reques
 
 func (handler *Handler) allowedMethods(requestPath, apiPath string) []string {
 	switch {
-	case requestPath == apiPath+"/captcha", requestPath == apiPath+"/session", requestPath == apiPath+"/list":
+	case requestPath == apiPath+"/captcha", requestPath == apiPath+"/session", requestPath == apiPath+"/list", requestPath == apiPath+"/reinit":
 		return []string{http.MethodGet}
 	case requestPath == apiPath+"/logIn", requestPath == apiPath+"/logout":
 		return []string{http.MethodPost}

@@ -22,7 +22,7 @@
 
 1. 提供单进程 API、登录鉴权、验证码和媒体流服务。
 
-2. 对资源库进行水库抽样（无数据库/无缓存）。
+2. 使用 SQLite 持久化媒体索引；索引未就绪时回退到硬盘扫描。
 
 3. 可配置 HTTP 或 HTTPS；HTTPS 需要自备证书。
 
@@ -92,6 +92,8 @@ Go 服务常用配置：`LISTEN_HOST`（默认 `0.0.0.0`）、`LISTEN_PORT`（�
 
 `LOG_LEVEL` 默认为 `info`，仅记录登录成功或失败；`debug` 记录脱敏后的请求及来源诊断；`off` 关闭常规访问和登录日志，但不隐藏配置或启动失败。同源 HTTPS 反向代理无需默认放宽 `CORS_ORIGINS`：Go 收到的 Host 必须保留外部主机和端口；如果 Go 上游连接使用 HTTP，`TRUSTED_PROXIES` 必须匹配 Go 实际看到的直接代理地址，且代理必须传递真实外部协议。多层代理应根据实际 TLS 终止位置核对 `X-Forwarded-Proto`。
 
+`DB_PATH` 默认是 `db/nas-tiktok.db`，相对路径以 Go 进程的当前工作目录为基准。媒体列表在 SQLite 索引就绪时从数据库抽样；首次建索引或重建期间会回退到硬盘扫描。添加或移除 NAS 文件后，可使用已登录会话调用 `GET {APP_URL_PREFIX}/api/reinit`（根路径为 `/api/reinit`）启动后台重建；请求无需正文，成功启动时立即返回 `202`，已有重建任务运行时返回 `409`。
+
 ### 正式部署
 
 ---
@@ -103,6 +105,7 @@ Go 服务常用配置：`LISTEN_HOST`（默认 `0.0.0.0`）、`LISTEN_PORT`（�
 ├── certs/ # 证书文件
 │   ├── fullchain.pem # 证书
 │   └── privkey.pem # 私钥
+├── db/ # 持久化 SQLite 媒体索引
 ├── statics/ # 只读媒体目录
 └── client/dist/ # Docker 构建阶段生成的 Vue 静态文件
 /usr/local/bin/nas-tiktok # Go 单进程服务
@@ -114,7 +117,9 @@ Go 服务常用配置：`LISTEN_HOST`（默认 `0.0.0.0`）、`LISTEN_PORT`（�
 docker build -t nas-tiktok:local .
 ```
 
-`Dockerfile` 在构建阶段用 Node.js 生成 Vue `client/dist`，再用 Go 1.24 构建后端；最终镜像由 Go 进程同时提供 API 和前端静态文件，不包含 NestJS、Node.js 运行时或 PM2。账号、密码和 JWT 密钥通过运行时环境提供，不复制进最终镜像。该构建流程尚未在 Docker 中验证。
+`Dockerfile` 在构建阶段用 Node.js 生成 Vue `client/dist`，再用 Go 1.24 构建后端；最终镜像由 Go 进程同时提供 API 和前端静态文件，不包含 NestJS、Node.js 运行时或 PM2。账号、密码和 JWT 密钥通过运行时环境提供，不复制进最终镜像。本地 Docker 镜像构建及使用临时媒体库和持久化数据库目录的容器启动已验证；真实 NAS 挂载与生产部署流程未验证。
+
+部署时，SQLite 数据库保存在 `$HOME/workspace/pm2/NAS-TikTok/db/`，并以读写方式挂载到容器的 `/workspace/db`。媒体和证书目录仍以只读方式挂载。
 
 `build.sh` 从脚本所在的当前 Git 工作区构建，不会拉取或切换分支；镜像会记录源码 Commit，工作区有未提交改动时标记为 `dirty`。部署前在 `$HOME/workspace/pm2/NAS-TikTok/.env` 创建 Docker `KEY=value` 格式的运行时配置文件，至少填入 `ACCOUNT`、`PASSWORD` 和不少于 32 字节的 `JWT_SECRET`。需要 HTTPS 时设置 `SSL=true`，并将 `fullchain.pem` 与 `privkey.pem` 放在同目录的 `certs/` 下；媒体放入 `statics/`。根路径部署无需额外设置；子路径部署还需在运行时 `.env` 中设置 `APP_URL_PREFIX=photos`，并以 `VITE_BASE_URL=/photos/ bash ./build.sh` 构建匹配的前端。运行 `bash ./build.sh` 后选择构建、部署或构建并部署。部署会让你选择 `host` 或 `bridge` 网络和服务端口；若没有旧容器且系统提供 `ss`，脚本会先尽力检查 TCP 端口是否已被本机进程占用，Docker 启动阶段仍可能发现端口冲突。它会询问 `.env` 是否启用 HTTPS；若使用默认证书路径，会检查证书和私钥文件存在、非空且当前用户可读，自定义路径则由容器启动健康检查验证。媒体与证书目录以只读方式挂载。脚本先创建候选容器，启动后等待最多 90 秒的容器内 loopback 健康检查；只有健康后才移除旧容器，失败时会尝试恢复旧容器原先的运行状态。健康检查访问 `APP_URL_PREFIX` 下的 `/healthz`，HTTPS 探测会跳过本地证书信任校验。Docker 部署尚未验证。
 

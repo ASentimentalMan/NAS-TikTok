@@ -16,6 +16,7 @@ import (
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/config"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/httpapi"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/catalog"
+	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/index"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/session"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/web"
 )
@@ -24,6 +25,7 @@ type App struct {
 	config config.Config
 	server *http.Server
 	media  *catalog.Catalog
+	index  *index.Manager
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -31,17 +33,34 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize media catalog: %w", err)
 	}
+	mediaIndex, err := index.New(cfg.DatabasePath, cfg.MediaRoot, catalogScanner{catalog: media}, log.Default())
+	if err != nil {
+		log.Printf("event=media_index_init_failed error=%q", err)
+		mediaIndex = nil
+	}
 	captchas, err := captcha.New(cfg.CaptchaTTL, cfg.CaptchaLimit)
 	if err != nil {
+		if mediaIndex != nil {
+			_ = mediaIndex.Close()
+		}
 		_ = media.Close()
 		return nil, fmt.Errorf("initialize captcha service: %w", err)
 	}
 	sessions, err := session.New(cfg.JWTSecret, cfg.SessionTTL, cfg.SessionLimit)
 	if err != nil {
+		if mediaIndex != nil {
+			_ = mediaIndex.Close()
+		}
 		_ = media.Close()
 		return nil, fmt.Errorf("initialize session service: %w", err)
 	}
-	handler := httpapi.New(cfg, auth.New(cfg.Account, cfg.Password), captchas, sessions, media)
+	authenticator := auth.New(cfg.Account, cfg.Password)
+	var handler *httpapi.Handler
+	if mediaIndex == nil {
+		handler = httpapi.New(cfg, authenticator, captchas, sessions, media, nil)
+	} else {
+		handler = httpapi.New(cfg, authenticator, captchas, sessions, media, mediaIndex)
+	}
 	handler.SetWeb(web.New(cfg))
 	server := &http.Server{
 		Addr:              net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.Port)),
@@ -53,10 +72,15 @@ func New(cfg config.Config) (*App, error) {
 	if cfg.SSL {
 		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
-	return &App{config: cfg, server: server, media: media}, nil
+	return &App{config: cfg, server: server, media: media, index: mediaIndex}, nil
 }
 
 func (application *App) Run(ctx context.Context) error {
+	if application.index != nil {
+		if err := application.index.Start(ctx); err != nil {
+			log.Printf("event=media_index_start_failed error=%q", err)
+		}
+	}
 	result := make(chan error, 1)
 	go func() {
 		if application.config.SSL {
@@ -94,5 +118,25 @@ func (application *App) Run(ctx context.Context) error {
 }
 
 func (application *App) Close() error {
-	return application.media.Close()
+	var indexErr error
+	if application.index != nil {
+		indexErr = application.index.Close()
+	}
+	return errors.Join(indexErr, application.media.Close())
+}
+
+type catalogScanner struct {
+	catalog *catalog.Catalog
+}
+
+func (scanner catalogScanner) ScanDirectory(ctx context.Context, relativeDir string) ([]index.MediaFile, []string, error) {
+	files, directories, err := scanner.catalog.ScanDirectory(ctx, relativeDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	indexedFiles := make([]index.MediaFile, len(files))
+	for position, file := range files {
+		indexedFiles[position] = index.MediaFile{RelativePath: file.RelativePath, MediaType: file.MediaType}
+	}
+	return indexedFiles, directories, nil
 }

@@ -20,6 +20,7 @@ type Config struct {
 	BasePath         string
 	PublicAPIBase    string
 	MediaRoot        string
+	DatabasePath     string
 	StaticRoot       string
 	Account          string
 	Password         string
@@ -211,6 +212,14 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, errors.New("MEDIA_ROOT is invalid")
 	}
+	databasePath := first("DB_PATH")
+	if databasePath == "" {
+		databasePath = filepath.Join("db", "nas-tiktok.db")
+	}
+	databasePath, err = filepath.Abs(databasePath)
+	if err != nil {
+		return Config{}, errors.New("DB_PATH is invalid")
+	}
 	staticRoot := first("STATIC_ROOT")
 	if staticRoot == "" {
 		staticRoot = filepath.Join("client", "dist")
@@ -247,6 +256,7 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		BasePath:         basePath,
 		PublicAPIBase:    publicAPIBase,
 		MediaRoot:        mediaRoot,
+		DatabasePath:     databasePath,
 		StaticRoot:       staticRoot,
 		Account:          account,
 		Password:         password,

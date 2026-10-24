@@ -25,12 +25,20 @@ var (
 )
 
 var imageExtensions = map[string]struct{}{
-	".jpg": {}, ".jpeg": {}, ".heic": {}, ".heif": {}, ".avif": {},
-	".webp": {}, ".png": {}, ".gif": {}, ".apng": {}, ".bmp": {},
+	".jpg": {}, ".jpeg": {}, ".jfif": {}, ".png": {}, ".webp": {},
+	".avif": {}, ".heic": {}, ".heif": {}, ".gif": {}, ".apng": {},
+	".bmp": {}, ".jxl": {},
 }
 
 var videoExtensions = map[string]struct{}{
-	".mp4": {}, ".webm": {}, ".mov": {}, ".ogv": {}, ".ogg": {},
+	".mp4": {}, ".mov": {}, ".m4v": {}, ".webm": {},
+}
+
+// MediaFile describes an image or video file found under the media root.
+// RelativePath always uses slash separators and is relative to that root.
+type MediaFile struct {
+	RelativePath string
+	MediaType    string
 }
 
 type Catalog struct {
@@ -61,7 +69,7 @@ func (catalog *Catalog) RootPath() string {
 }
 
 func (catalog *Catalog) List(ctx context.Context, mediaType string) ([]string, error) {
-	extensions, ok := extensionsFor(mediaType)
+	_, ok := extensionsFor(mediaType)
 	if !ok {
 		return nil, ErrInvalidType
 	}
@@ -77,62 +85,20 @@ func (catalog *Catalog) List(ctx context.Context, mediaType string) ([]string, e
 		return nil, err
 	}
 	var partial bool
-
-	readDirectory := func(directory string) ([]string, error) {
-		directoryFile, err := catalog.root.Open(directory)
-		if err != nil {
-			return nil, err
-		}
-		defer directoryFile.Close()
-
-		subdirectories := make([]string, 0)
-		for {
-			entries, readErr := directoryFile.ReadDir(128)
-			for _, entry := range entries {
-				if err := ctx.Err(); err != nil {
-					return subdirectories, err
-				}
-				name := entry.Name()
-				if entry.IsDir() {
-					if name != "@eaDir" {
-						subdirectories = append(subdirectories, path.Join(directory, name))
-					}
-					continue
-				}
-				if entry.Type()&fs.ModeSymlink != 0 {
-					continue
-				}
-				info, err := entry.Info()
-				if err != nil {
-					partial = true
-					continue
-				}
-				if !info.Mode().IsRegular() {
-					continue
-				}
-				extension := strings.ToLower(filepath.Ext(name))
-				if _, matched := extensions[extension]; matched {
-					selected.Add(path.Join(directory, name))
-				}
-			}
-			if readErr != nil {
-				if errors.Is(readErr, io.EOF) {
-					return subdirectories, nil
-				}
-				return subdirectories, readErr
-			}
-			if len(entries) == 0 {
-				return subdirectories, errors.New("directory read returned no entries without reaching EOF")
-			}
-		}
-	}
-
 	var walk func(string) error
 	walk = func(directory string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		subdirectories, err := readDirectory(directory)
+		files, subdirectories, err, incomplete := catalog.scanDirectory(ctx, directory)
+		for _, file := range files {
+			if file.MediaType == mediaType {
+				selected.Add(file.RelativePath)
+			}
+		}
+		if incomplete != nil {
+			partial = true
+		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
@@ -160,6 +126,123 @@ func (catalog *Catalog) List(ctx context.Context, mediaType string) ([]string, e
 		return selected.Items(), ErrPartialScan
 	}
 	return selected.Items(), nil
+}
+
+// ScanDirectory returns media files and immediate child directories for one
+// directory under the media root. Pass "." to scan the root. A failed or
+// incomplete scan returns no results, so callers cannot mistake partial data
+// for a complete directory listing.
+func (catalog *Catalog) ScanDirectory(ctx context.Context, relativeDir string) ([]MediaFile, []string, error) {
+	if relativeDir != "." && !validRelativePath(relativeDir) {
+		return nil, nil, ErrUnsafePath
+	}
+	files, childDirs, err, incomplete := catalog.scanDirectory(ctx, relativeDir)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, nil, ctxErr
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan directory %q: %w", relativeDir, err)
+	}
+	if incomplete != nil {
+		return nil, nil, fmt.Errorf("%w: scan directory %q: %w", ErrPartialScan, relativeDir, incomplete)
+	}
+	return files, childDirs, nil
+}
+
+// scanDirectory is shared by List and ScanDirectory. It retains entries
+// discovered before a read failure so List can preserve its partial-scan
+// behavior; ScanDirectory discards those results and reports the error.
+func (catalog *Catalog) scanDirectory(ctx context.Context, relativeDir string) ([]MediaFile, []string, error, error) {
+	if relativeDir != "." && !validRelativePath(relativeDir) {
+		return nil, nil, ErrUnsafePath, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err, nil
+	}
+
+	if relativeDir != "." {
+		current := "."
+		for _, segment := range strings.Split(relativeDir, "/") {
+			current = path.Join(current, segment)
+			info, err := catalog.root.Lstat(current)
+			if err != nil {
+				return nil, nil, err, nil
+			}
+			if info.Mode()&fs.ModeSymlink != 0 {
+				return nil, nil, ErrUnsafePath, nil
+			}
+			if !info.IsDir() {
+				return nil, nil, fmt.Errorf("%q is not a directory", relativeDir), nil
+			}
+		}
+	}
+
+	directoryFile, err := catalog.root.Open(relativeDir)
+	if err != nil {
+		return nil, nil, err, nil
+	}
+	defer directoryFile.Close()
+	info, err := directoryFile.Stat()
+	if err != nil {
+		return nil, nil, err, nil
+	}
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("%q is not a directory", relativeDir), nil
+	}
+
+	files := make([]MediaFile, 0)
+	childDirs := make([]string, 0)
+	var incomplete error
+	for {
+		if err := ctx.Err(); err != nil {
+			return files, childDirs, err, incomplete
+		}
+		entries, readErr := directoryFile.ReadDir(128)
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return files, childDirs, err, incomplete
+			}
+			name := entry.Name()
+			if entry.IsDir() {
+				if name != "@eaDir" {
+					childDirs = append(childDirs, path.Join(relativeDir, name))
+				}
+				continue
+			}
+			if entry.Type()&fs.ModeSymlink != 0 {
+				continue
+			}
+			entryInfo, err := entry.Info()
+			if err != nil {
+				if incomplete == nil {
+					incomplete = fmt.Errorf("inspect %q: %w", path.Join(relativeDir, name), err)
+				}
+				continue
+			}
+			if entryInfo.Mode()&fs.ModeSymlink != 0 {
+				continue
+			}
+			if !entryInfo.Mode().IsRegular() {
+				continue
+			}
+			mediaType, supported := mediaTypeForExtension(filepath.Ext(name))
+			if supported {
+				files = append(files, MediaFile{
+					RelativePath: path.Join(relativeDir, name),
+					MediaType:    mediaType,
+				})
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return files, childDirs, nil, incomplete
+			}
+			return files, childDirs, readErr, incomplete
+		}
+		if len(entries) == 0 {
+			return files, childDirs, errors.New("directory read returned no entries without reaching EOF"), incomplete
+		}
+	}
 }
 
 func (catalog *Catalog) Open(relative string) (*os.File, fs.FileInfo, error) {
@@ -208,12 +291,18 @@ func extensionsFor(mediaType string) (map[string]struct{}, bool) {
 	}
 }
 
-func isMediaExtension(extension string) bool {
-	extension = strings.ToLower(extension)
-	if _, ok := imageExtensions[extension]; ok {
-		return true
+func mediaTypeForExtension(extension string) (string, bool) {
+	if _, ok := imageExtensions[strings.ToLower(extension)]; ok {
+		return "image", true
 	}
-	_, ok := videoExtensions[extension]
+	if _, ok := videoExtensions[strings.ToLower(extension)]; ok {
+		return "video", true
+	}
+	return "", false
+}
+
+func isMediaExtension(extension string) bool {
+	_, ok := mediaTypeForExtension(extension)
 	return ok
 }
 

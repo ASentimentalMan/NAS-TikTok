@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -34,6 +35,37 @@ func TestFromLookupUsesRelativeSameOriginAPIByDefault(t *testing.T) {
 	}
 	if len(cfg.AllowedIPs) != 0 || len(cfg.TrustedProxies) != 0 {
 		t.Fatalf("optional IP configuration defaults = allowed:%v trusted:%v, want empty", cfg.AllowedIPs, cfg.TrustedProxies)
+	}
+}
+
+func TestFromLookupSetsDatabasePathDefaultAndOverride(t *testing.T) {
+	defaultPath, err := filepath.Abs(filepath.Join("db", "nas-tiktok.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := FromLookup(lookup(map[string]string{
+		"ACCOUNT": "owner", "PASSWORD": "pw", "JWT_SECRET": strings.Repeat("k", 32),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabasePath != defaultPath {
+		t.Fatalf("default DatabasePath = %q, want %q", cfg.DatabasePath, defaultPath)
+	}
+
+	cfg, err = FromLookup(lookup(map[string]string{
+		"ACCOUNT": "owner", "PASSWORD": "pw", "JWT_SECRET": strings.Repeat("k", 32),
+		"DB_PATH": "storage/custom.db",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs("storage/custom.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabasePath != want {
+		t.Fatalf("configured DatabasePath = %q, want %q", cfg.DatabasePath, want)
 	}
 }
 

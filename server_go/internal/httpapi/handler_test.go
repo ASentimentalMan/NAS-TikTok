@@ -24,6 +24,7 @@ import (
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/captcha"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/config"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/catalog"
+	mediaindex "github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/index"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/session"
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/web"
 )
@@ -52,7 +53,7 @@ func TestCookieLoginSessionListRangeAndLogout(t *testing.T) {
 	t.Cleanup(func() { _ = catalog.Close() })
 	captchas, _ := captcha.New(cfg.CaptchaTTL, cfg.CaptchaLimit)
 	sessions, _ := session.New(cfg.JWTSecret, cfg.SessionTTL, cfg.SessionLimit)
-	handler := New(cfg, auth.New(cfg.Account, cfg.Password), captchas, sessions, catalog)
+	handler := New(cfg, auth.New(cfg.Account, cfg.Password), captchas, sessions, catalog, nil)
 	staticRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(staticRoot, "index.html"), []byte("spa"), 0o600); err != nil {
 		t.Fatal(err)
@@ -161,6 +162,92 @@ func TestListReturnsEmptyDataForEmptyCatalog(t *testing.T) {
 	}
 }
 
+func TestListUsesIndexWhenReadyAndCatalogWhileIndexIsUnavailable(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	cookie := authenticatedCookie(t, handler)
+	diskPath := filepath.Join(handler.catalog.RootPath(), "disk image.jpg")
+	if err := os.WriteFile(diskPath, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index := &fakeMediaIndex{paths: []string{"indexed image.jpg"}, ready: true}
+	handler.index = index
+
+	indexed := invoke(handler, http.MethodGet, "/api/list?type=image", nil, nil, "127.0.0.1:1234", cookie)
+	if indexed.Code != http.StatusOK {
+		t.Fatalf("indexed list status = %d body=%q", indexed.Code, indexed.Body.String())
+	}
+	var indexedResult struct {
+		Data []string `json:"data"`
+	}
+	if err := json.Unmarshal(indexed.Body.Bytes(), &indexedResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(indexedResult.Data) != 1 || !strings.Contains(indexedResult.Data[0], "indexed%20image.jpg") {
+		t.Fatalf("ready index list = %#v, want indexed media path", indexedResult.Data)
+	}
+
+	index.ready = false
+	index.paths = []string{"stale index image.jpg"}
+	disk := invoke(handler, http.MethodGet, "/api/list?type=image", nil, nil, "127.0.0.1:1234", cookie)
+	if disk.Code != http.StatusOK {
+		t.Fatalf("disk fallback list status = %d body=%q", disk.Code, disk.Body.String())
+	}
+	var diskResult struct {
+		Data []string `json:"data"`
+	}
+	if err := json.Unmarshal(disk.Body.Bytes(), &diskResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(diskResult.Data) != 1 || !strings.Contains(diskResult.Data[0], "disk%20image.jpg") {
+		t.Fatalf("unready index list = %#v, want disk scan result", diskResult.Data)
+	}
+
+	index.ready = true
+	index.sampleErr = errors.New("private database detail")
+	failed := invoke(handler, http.MethodGet, "/api/list?type=image", nil, nil, "127.0.0.1:1234", cookie)
+	if failed.Code != http.StatusServiceUnavailable || strings.Contains(failed.Body.String(), "private database detail") {
+		t.Fatalf("database sample failure = %d body=%q, want generic 503", failed.Code, failed.Body.String())
+	}
+}
+
+func TestReinitializeUsesSessionAndBasePathAndReturnsAccepted(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	handler.config.BasePath = "/photos"
+	handler.config.PublicAPIBase = "/photos/api"
+	index := &fakeMediaIndex{reinitializeStarted: true}
+	handler.index = index
+
+	unauthorized := invoke(handler, http.MethodGet, "/photos/api/reinit", nil, nil, "127.0.0.1:1234")
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated reinitialize status = %d body=%q", unauthorized.Code, unauthorized.Body.String())
+	}
+	if outsideBasePath := invoke(handler, http.MethodGet, "/api/reinit", nil, nil, "127.0.0.1:1234", authenticatedCookie(t, handler)); outsideBasePath.Code != http.StatusNotFound {
+		t.Fatalf("reinitialize outside base path status = %d, want 404", outsideBasePath.Code)
+	}
+	preflight := invoke(handler, http.MethodOptions, "/photos/api/reinit", nil,
+		http.Header{"Access-Control-Request-Method": []string{http.MethodGet}}, "127.0.0.1:1234")
+	if preflight.Code != http.StatusNoContent || !strings.Contains(preflight.Header().Get("Access-Control-Allow-Methods"), http.MethodGet) {
+		t.Fatalf("reinitialize preflight = %d methods=%q", preflight.Code, preflight.Header().Get("Access-Control-Allow-Methods"))
+	}
+
+	cookie := authenticatedCookie(t, handler)
+	accepted := invoke(handler, http.MethodGet, "/photos/api/reinit", nil, nil, "127.0.0.1:1234", cookie)
+	if accepted.Code != http.StatusAccepted || accepted.Body.String() != "{\"ok\":true,\"started\":true}\n" || index.reinitializeCalls != 1 {
+		t.Fatalf("authenticated reinitialize = %d body=%q calls=%d", accepted.Code, accepted.Body.String(), index.reinitializeCalls)
+	}
+}
+
+func TestReinitializeReturnsConflictWhenAlreadyRunning(t *testing.T) {
+	handler := newLoginTestHandler(t, 10)
+	index := &fakeMediaIndex{reinitializeStarted: false, reinitializeErr: mediaindex.ErrScanInProgress}
+	handler.index = index
+
+	response := invoke(handler, http.MethodGet, "/api/reinit", nil, nil, "127.0.0.1:1234", authenticatedCookie(t, handler))
+	if response.Code != http.StatusConflict || response.Body.String() == "" {
+		t.Fatalf("already-running reinitialize = %d body=%q, want conflict JSON", response.Code, response.Body.String())
+	}
+}
+
 func TestListReturnsServiceUnavailableWhenCatalogScanFails(t *testing.T) {
 	handler := newLoginTestHandler(t, 10)
 	cookie := authenticatedCookie(t, handler)
@@ -207,7 +294,7 @@ func TestIPAllowlistAppliesToPublicRoutes(t *testing.T) {
 	}
 	captchas, _ := captcha.New(cfg.CaptchaTTL, cfg.CaptchaLimit)
 	sessions, _ := session.New(cfg.JWTSecret, cfg.SessionTTL, cfg.SessionLimit)
-	handler := New(cfg, auth.New(cfg.Account, cfg.Password), captchas, sessions, media)
+	handler := New(cfg, auth.New(cfg.Account, cfg.Password), captchas, sessions, media, nil)
 	response := invoke(handler, http.MethodGet, "/api/captcha", nil, nil, "192.0.2.55:1234")
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("public captcha ignored IP allowlist: status %d", response.Code)
@@ -725,7 +812,7 @@ func TestHealthzSupportsRootAndDeploymentPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(cfg, auth.New("owner", "pw"), captchas, sessions, media)
+	handler := New(cfg, auth.New("owner", "pw"), captchas, sessions, media, nil)
 
 	for _, target := range []string{"/healthz", "/photos/healthz"} {
 		response := invoke(handler, http.MethodGet, target, nil, nil, "127.0.0.1:1234")
@@ -755,7 +842,7 @@ func TestCORSPreflightIsScopedToRouteMethodAndHeaders(t *testing.T) {
 	}
 	captchas, _ := captcha.New(time.Minute, 4)
 	sessions, _ := session.New(cfg.JWTSecret, time.Minute, 4)
-	handler := New(cfg, auth.New("owner", "pw"), captchas, sessions, media)
+	handler := New(cfg, auth.New("owner", "pw"), captchas, sessions, media, nil)
 
 	valid := invoke(handler, http.MethodOptions, "/api/logIn", nil,
 		http.Header{
@@ -964,7 +1051,32 @@ func newLoginTestHandler(t *testing.T, loginRateLimit int) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, auth.New(cfg.Account, cfg.Password), captchas, sessions, media)
+	return New(cfg, auth.New(cfg.Account, cfg.Password), captchas, sessions, media, nil)
+}
+
+type fakeMediaIndex struct {
+	paths               []string
+	ready               bool
+	sampleErr           error
+	reinitializeStarted bool
+	reinitializeErr     error
+	reinitializeCalls   int
+}
+
+func (index *fakeMediaIndex) Sample(ctx context.Context, _ string) ([]string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	return append([]string(nil), index.paths...), index.ready, index.sampleErr
+}
+
+func (index *fakeMediaIndex) Reinitialize() (bool, error) {
+	index.reinitializeCalls++
+	return index.reinitializeStarted, index.reinitializeErr
+}
+
+func (*fakeMediaIndex) RemoveMissing(string) error {
+	return nil
 }
 
 func loginWithFreshCaptcha(t *testing.T, handler *Handler, remote, account, password string) *httptest.ResponseRecorder {

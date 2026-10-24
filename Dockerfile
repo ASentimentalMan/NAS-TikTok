@@ -33,7 +33,10 @@ ENV APP_NAME=NAS-TikTok \
     SSL=false \
     ALLOW_IPv6=false \
     MEDIA_ROOT=/workspace/statics \
+    DB_PATH=/workspace/db/nas-tiktok.db \
     STATIC_ROOT=/workspace/client/dist
+
+RUN mkdir -p /workspace/db && chown app:app /workspace/db
 
 EXPOSE 3000
 COPY --from=client-builder /app/client/dist /workspace/client/dist

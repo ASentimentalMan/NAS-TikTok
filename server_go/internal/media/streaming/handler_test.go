@@ -1,15 +1,25 @@
 package streaming
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/catalog"
+	mediaindex "github.com/ASentimentalMan/NAS-TikTok/server_go/internal/media/index"
 )
 
 func TestServeContentSupportsRangeHeadAndPrivateCaching(t *testing.T) {
@@ -22,7 +32,7 @@ func TestServeContentSupportsRangeHeadAndPrivateCaching(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer media.Close()
-	handler := New(media)
+	handler := New(media, nil)
 
 	request := httptest.NewRequest("GET", "/api/stream/video.mp4", nil)
 	request.Header.Set("Range", "bytes=2-5")
@@ -71,7 +81,7 @@ func TestServeContentHandlesRangeVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer media.Close()
-	handler := New(media)
+	handler := New(media, nil)
 
 	cases := []struct {
 		name         string
@@ -125,7 +135,7 @@ func TestServeContentMultipleRangesFollowGoCompatibilitySetting(t *testing.T) {
 	request := httptest.NewRequest("GET", "/api/stream/video.mp4", nil)
 	request.Header.Set("Range", "bytes=0-1,4-5")
 	response := httptest.NewRecorder()
-	New(media).ServeHTTP(response, request, "video.mp4")
+	New(media, nil).ServeHTTP(response, request, "video.mp4")
 	switch response.Code {
 	case 200:
 		if response.Body.String() != "0123456789" || response.Header().Get("Content-Range") != "" {
@@ -172,4 +182,195 @@ func TestServeContentMultipleRangesFollowGoCompatibilitySetting(t *testing.T) {
 		body, readErr := io.ReadAll(part)
 		t.Fatalf("unexpected extra multipart range Content-Range=%q body=%q read error=%v", part.Header.Get("Content-Range"), body, readErr)
 	}
+}
+
+func TestContentTypeMatchesMediaWhitelist(t *testing.T) {
+	cases := map[string]string{
+		".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".jfif": "image/jpeg",
+		".png": "image/png", ".webp": "image/webp", ".avif": "image/avif",
+		".heic": "image/heic", ".heif": "image/heif", ".gif": "image/gif",
+		".apng": "image/apng", ".bmp": "image/bmp", ".jxl": "image/jxl",
+		".mp4": "video/mp4", ".mov": "video/quicktime", ".m4v": "video/mp4",
+		".webm": "video/webm",
+		".ogv":  "application/octet-stream", ".ogg": "application/octet-stream",
+		".xml": "application/octet-stream",
+	}
+	for extension, want := range cases {
+		t.Run(extension, func(t *testing.T) {
+			if got := contentType(extension); got != want {
+				t.Fatalf("contentType(%q) = %q, want %q", extension, got, want)
+			}
+			if got := contentType(strings.ToUpper(extension)); got != want {
+				t.Fatalf("contentType(%q) = %q, want %q", strings.ToUpper(extension), got, want)
+			}
+		})
+	}
+}
+
+type failingOpener struct {
+	err error
+}
+
+func (opener failingOpener) Open(string) (*os.File, fs.FileInfo, error) {
+	return nil, nil, opener.err
+}
+
+func TestMissingFileCallbackOnlyRunsForConfirmedMissingPath(t *testing.T) {
+	cases := []struct {
+		name         string
+		err          error
+		wantStatus   int
+		wantBody     string
+		wantCallback bool
+	}{
+		{
+			name:       "wrapped missing",
+			err:        fmt.Errorf("catalog open: %w", os.ErrNotExist),
+			wantStatus: 404, wantBody: "file not found\n", wantCallback: true,
+		},
+		{
+			name:       "unsafe path",
+			err:        fmt.Errorf("catalog open: %w", catalog.ErrUnsafePath),
+			wantStatus: 404, wantBody: "file not found\n",
+		},
+		{
+			name:       "unsupported extension",
+			err:        catalog.ErrUnsupported,
+			wantStatus: 404, wantBody: "file not found\n",
+		},
+		{
+			name:       "permission denied",
+			err:        os.ErrPermission,
+			wantStatus: 500, wantBody: "file unavailable\n",
+		},
+		{
+			name:       "other I/O error",
+			err:        errors.New("disk read failed"),
+			wantStatus: 500, wantBody: "file unavailable\n",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			var callbackPaths []string
+			handler := New(failingOpener{err: test.err}, func(relativePath string) error {
+				callbackPaths = append(callbackPaths, relativePath)
+				return errors.New("index update failed")
+			})
+			request := httptest.NewRequest("GET", "/api/stream/missing.jpg", nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request, "missing.jpg")
+
+			if response.Code != test.wantStatus || response.Body.String() != test.wantBody {
+				t.Fatalf("response = status %d body %q, want status %d body %q", response.Code, response.Body.String(), test.wantStatus, test.wantBody)
+			}
+			if test.wantCallback {
+				if len(callbackPaths) != 1 || callbackPaths[0] != "missing.jpg" {
+					t.Fatalf("callback paths = %v, want [missing.jpg]", callbackPaths)
+				}
+			} else if len(callbackPaths) != 0 {
+				t.Fatalf("callback paths = %v, want no callback", callbackPaths)
+			}
+		})
+	}
+}
+
+type indexScannerFunc func(context.Context, string) ([]mediaindex.MediaFile, []string, error)
+
+func (scanner indexScannerFunc) ScanDirectory(ctx context.Context, relativeDir string) ([]mediaindex.MediaFile, []string, error) {
+	return scanner(ctx, relativeDir)
+}
+
+func TestConcurrentMissingStreamsRemoveStaleReadyIndexPath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "live.jpg"), []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	media, err := catalog.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer media.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "index.sqlite")
+	manager, err := mediaindex.New(dbPath, root, indexScannerFunc(func(_ context.Context, relativeDir string) ([]mediaindex.MediaFile, []string, error) {
+		if relativeDir != "." {
+			return nil, nil, fmt.Errorf("unexpected directory %q", relativeDir)
+		}
+		return []mediaindex.MediaFile{
+			{RelativePath: "gone.jpg", MediaType: "image"},
+			{RelativePath: "live.jpg", MediaType: "image"},
+		}, nil, nil
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	waitForIndexReady(t, manager)
+
+	handler := New(media, manager.RemoveMissing)
+	const requestCount = 12
+	startRequests := make(chan struct{})
+	responses := make(chan int, requestCount)
+	var requests sync.WaitGroup
+	requests.Add(requestCount)
+	for range requestCount {
+		go func() {
+			defer requests.Done()
+			<-startRequests
+			request := httptest.NewRequest(http.MethodGet, "/api/stream/gone.jpg", nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request, "gone.jpg")
+			responses <- response.Code
+		}()
+	}
+	close(startRequests)
+	finished := make(chan struct{})
+	go func() {
+		requests.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent missing stream requests did not finish")
+	}
+	close(responses)
+	for status := range responses {
+		if status != http.StatusNotFound {
+			t.Errorf("missing stream status = %d, want 404", status)
+		}
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var staleRows int
+	if err := db.QueryRow("SELECT count(*) FROM media_files WHERE relative_path = ?", "gone.jpg").Scan(&staleRows); err != nil {
+		t.Fatal(err)
+	}
+	if staleRows != 0 {
+		t.Fatalf("database still contains %d rows for missing path", staleRows)
+	}
+	paths, ready, err := manager.Sample(context.Background(), "image")
+	if err != nil || !ready || len(paths) != 1 || paths[0] != "live.jpg" {
+		t.Fatalf("sample after missing streams = %v, ready=%t err=%v; want [live.jpg]", paths, ready, err)
+	}
+}
+
+func waitForIndexReady(t *testing.T, manager *mediaindex.Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, ready, err := manager.Sample(context.Background(), "image")
+		if err == nil && ready {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for ready media index")
 }

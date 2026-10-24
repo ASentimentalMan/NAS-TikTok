@@ -22,7 +22,7 @@ Are you overwhelmed by too many resources on your NAS and don't know what to wat
 
 1. Provides a single-process API, login authentication, CAPTCHA, and media streaming.
 
-2. Performs reservoir sampling on the media library (no database or cache).
+2. Uses a persistent SQLite media index, falling back to disk scans while the index is unavailable.
 
 3. Supports configurable HTTP or HTTPS; HTTPS requires your own certificates.
 
@@ -92,6 +92,8 @@ Common Go settings: `LISTEN_HOST` (default `0.0.0.0`), `LISTEN_PORT` (default `3
 
 `LOG_LEVEL` defaults to `info` and records login successes and failures only. `debug` records redacted request and origin diagnostics; `off` disables routine access and login logs but does not hide configuration or startup failures. Same-origin HTTPS behind a reverse proxy does not require a permissive `CORS_ORIGINS` default: Go must receive the external Host including its port. If the Go upstream uses HTTP, `TRUSTED_PROXIES` must match the direct peer address Go actually sees, and the proxy must forward the real external scheme. For a proxy chain, verify `X-Forwarded-Proto` against the actual TLS termination point.
 
+`DB_PATH` defaults to `db/nas-tiktok.db`, relative to the Go process's current working directory. Media lists use SQLite sampling when the index is ready; the server scans the media directory while building or rebuilding an index. After adding or removing NAS files, an authenticated session can call `GET {APP_URL_PREFIX}/api/reinit` (or `/api/reinit` at the root) to start a background rebuild. The request needs no body and returns `202` when started, or `409` if another rebuild is already running.
+
 ### Deployment
 
 ---
@@ -103,6 +105,7 @@ Common Go settings: `LISTEN_HOST` (default `0.0.0.0`), `LISTEN_PORT` (default `3
 ├── certs/ # Certificate folder
 │   ├── fullchain.pem # Certificate
 │   └── privkey.pem # Private key
+├── db/ # Persistent SQLite media index
 ├── statics/ # Read-only media directory
 └── client/dist/ # Vue static files generated during the Docker build
 /usr/local/bin/nas-tiktok # Single-process Go service
@@ -114,7 +117,9 @@ Common Go settings: `LISTEN_HOST` (default `0.0.0.0`), `LISTEN_PORT` (default `3
 docker build -t nas-tiktok:local .
 ```
 
-The `Dockerfile` builds Vue `client/dist` with Node.js, then builds the backend with Go 1.24. The final image runs one Go process to serve both the API and frontend files; it does not include NestJS, a Node.js runtime, or PM2. Account credentials and the JWT signing key are supplied at runtime and are not copied into the final image. The Docker build has not been validated.
+The `Dockerfile` builds Vue `client/dist` with Node.js, then builds the backend with Go 1.24. The final image runs one Go process to serve both the API and frontend files; it does not include NestJS, a Node.js runtime, or PM2. Account credentials and the JWT signing key are supplied at runtime and are not copied into the final image. The local Docker image build and container startup with a temporary media library and persistent database directory were verified; real NAS mounts and production deployment were not tested.
+
+At deployment, SQLite data is stored in `$HOME/workspace/pm2/NAS-TikTok/db/` and mounted read-write at `/workspace/db`. The media and certificate directories remain read-only mounts.
 
 `build.sh` builds from the Git worktree containing the script. It does not fetch or switch branches. The image records the source Commit; builds from a worktree with uncommitted changes are marked `dirty`. Before deployment, create a Docker `KEY=value` runtime environment file at `$HOME/workspace/pm2/NAS-TikTok/.env` with at least `ACCOUNT`, `PASSWORD`, and a `JWT_SECRET` of 32 bytes or more. For HTTPS, set `SSL=true` and place `fullchain.pem` and `privkey.pem` in the sibling `certs/` directory; put media in `statics/`. Root-path deployment needs no extra setting. For a subpath, set `APP_URL_PREFIX=photos` in the runtime `.env`, then build the matching frontend with `VITE_BASE_URL=/photos/ bash ./build.sh`. Run `bash ./build.sh` and choose build, deploy, or build-and-deploy. Deployment prompts for `host` or `bridge` networking and the service port. If there is no old container and `ss` is available, the script makes a best-effort check for a local TCP listener; Docker may still report a port conflict when starting the container. It asks whether `.env` enables HTTPS; with the default certificate paths it checks that the certificate and key files exist, are nonempty, and are readable by the current user. Custom paths are checked by the container startup health check. Media and certificate directories are mounted read-only. The script creates a candidate container and waits up to 90 seconds for an in-container loopback health check. It removes the old container only after the candidate is healthy and attempts to restore the old container's previous running state if startup or health checking fails. The health check requests `/healthz` under `APP_URL_PREFIX`; HTTPS probes skip local certificate trust verification. Docker deployment has not been validated.
 

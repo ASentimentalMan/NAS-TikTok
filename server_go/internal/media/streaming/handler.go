@@ -17,11 +17,12 @@ type FileOpener interface {
 }
 
 type Handler struct {
-	files FileOpener
+	files         FileOpener
+	removeMissing func(string) error
 }
 
-func New(files FileOpener) *Handler {
-	return &Handler{files: files}
+func New(files FileOpener, removeMissing func(string) error) *Handler {
+	return &Handler{files: files, removeMissing: removeMissing}
 }
 
 func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request, relative string) {
@@ -32,7 +33,14 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	}
 	file, info, err := handler.files.Open(relative)
 	if err != nil {
-		if errors.Is(err, catalog.ErrUnsafePath) || errors.Is(err, catalog.ErrUnsupported) || errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) {
+			if handler.removeMissing != nil {
+				_ = handler.removeMissing(relative)
+			}
+			http.Error(writer, "file not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, catalog.ErrUnsafePath) || errors.Is(err, catalog.ErrUnsupported) {
 			http.Error(writer, "file not found", http.StatusNotFound)
 			return
 		}
@@ -54,36 +62,33 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 
 func contentType(extension string) string {
 	switch strings.ToLower(extension) {
-	case ".jpg", ".jpeg":
+	case ".jpg", ".jpeg", ".jfif":
 		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	case ".avif":
+		return "image/avif"
 	case ".heic":
 		return "image/heic"
 	case ".heif":
 		return "image/heif"
-	case ".avif":
-		return "image/avif"
-	case ".webp":
-		return "image/webp"
-	case ".png":
-		return "image/png"
 	case ".gif":
 		return "image/gif"
 	case ".apng":
 		return "image/apng"
 	case ".bmp":
 		return "image/bmp"
-	case ".mp4":
+	case ".jxl":
+		return "image/jxl"
+	case ".mp4", ".m4v":
 		return "video/mp4"
-	case ".webm":
-		return "video/webm"
 	case ".mov":
 		return "video/quicktime"
-	case ".ogv", ".ogg":
-		return "video/ogg"
+	case ".webm":
+		return "video/webm"
 	default:
-		if value := mime.TypeByExtension(extension); value != "" {
-			return value
-		}
 		return "application/octet-stream"
 	}
 }
