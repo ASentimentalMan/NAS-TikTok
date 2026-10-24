@@ -262,12 +262,6 @@ deploy() {
   fi
 
   mkdir -p "$WORK_DIR/certs" "$WORK_DIR/statics" "$WORK_DIR/db"
-  if ! docker run --rm --user 0:0 \
-    -v "$WORK_DIR/db:/workspace/db" \
-    --entrypoint chown "${IMAGE_NAME}:${TAG}" -R app:app /workspace/db; then
-    echo -e "${RED}❌ 无法为应用用户设置数据库目录写入权限${NC}" >&2
-    exit 1
-  fi
 
   local network_args=()
   if [[ "$network_mode" == "bridge" ]]; then
@@ -286,12 +280,12 @@ deploy() {
     --env-file "$ENV_FILE" \
     --env "LISTEN_PORT=$listen_port" \
     --env "VITE_API_PORT=$listen_port" \
-    --env MEDIA_ROOT=/workspace/statics \
+    --env MEDIA_ROOT=/workspace/static \
     --env DB_PATH=/workspace/db/nas-tiktok.db \
     --env STATIC_ROOT=/workspace/client/dist \
     "${network_args[@]}" \
     -v "$WORK_DIR/certs:/workspace/certs:ro" \
-    -v "$WORK_DIR/statics:/workspace/statics:ro" \
+    -v "$WORK_DIR/statics:/workspace/static:ro" \
     -v "$WORK_DIR/db:/workspace/db" \
     --restart unless-stopped \
     "${IMAGE_NAME}:${TAG}" >/dev/null; then

@@ -6,11 +6,9 @@
 
 # 忽略 node_modules（依赖由 Dockerfile 内 npm install 生成）
 client/node_modules/
-server/node_modules/
 
 # 忽略前端构建产物（如果已在 Dockerfile 中构建）
 client/dist/
-server/dist/
 
 # 忽略日志和缓存文件
 *.log
@@ -36,5 +34,4 @@ docs/
 *.md
 
 # 忽略资源
-server/statics/
 /statics/

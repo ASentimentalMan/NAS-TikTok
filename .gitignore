@@ -33,3 +33,4 @@ coverage
 /server/statics
 /statics/
 *.tar
+/server/.env.development

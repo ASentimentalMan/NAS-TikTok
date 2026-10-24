@@ -4,7 +4,7 @@
 
 - 仓库：NAS-TikTok，工作分支 codex。
 - 起始 HEAD：141ddc7cb6bc203be691ad0f798047ce412673da；本次没有创建 Commit，当前改动仍在工作区。
-- 范围：Go 后端迁移、必要的前端认证/API适配、部署文件与说明、前端依赖升级、自动化质量门禁和本地验证。
+- 范围：Go 后端实现、必要的前端认证/API适配、部署文件与说明、前端依赖升级、自动化质量门禁和本地验证。
 - 环境边界：未运行 Docker；未向远端传输媒体。此前按要求对本地媒体目录做过读取验证；补充闭环使用 /tmp 内合成媒体。
 - 交付判断：按用户本次限定范围，Go 服务已通过本地构建、测试和运行闭环，前端通过依赖检查、测试、类型检查与构建。Docker/NAS 和真实浏览器验证未执行；任务书中要求实测 Docker 的验收项仍为 NOT_RUN，不代表本地运行目标未完成。
 
@@ -12,20 +12,20 @@
 
 | 模块 | 当前实现 | 结果与限制 |
 |---|---|---|
-| M01 Runtime | server_go/cmd/nas-tiktok/main.go、internal/app/app.go | 单 Go 入口，支持 HTTP/HTTPS、信号处理和优雅关闭；本地启动闭环已验证。 |
-| M02 Configuration | internal/config | 类型化配置、启动校验、旧环境变量兼容及 server_go/.env.example；空 ALLOWED_IPS 在本地配置下表示不限制来源，部署应明确设置。 |
-| M03 HTTP | internal/httpapi | 路由、统一错误响应、方法/CORS处理、请求体限制、会话与访问策略衔接；含 /healthz、/api/session、/api/logout。 |
-| M04 Network access | internal/access | IPv4/IPv6/CIDR、回环和可信代理来源处理；单测通过，Docker 网络拓扑未实测。 |
-| M05 Captcha | internal/captcha | 数学 SVG、TTL、单次消费、容量控制和密码学随机数；单测通过。 |
-| M06 Authentication | internal/auth、internal/httpapi | 单账号环境凭据校验、登录失败处理与限速；未引入数据库或多用户模型。 |
-| M07 Session | internal/session、前端 API/router | HttpOnly Cookie、过期和撤销；前端不再把长期 JWT 加入媒体 URL。跨站和真实 Safari 行为未实测。 |
-| M08 Media storage | internal/media/catalog、internal/media/streaming | 媒体根目录约束、扩展名与 MIME、只读使用方式；目录外访问和符号链接测试通过。 |
-| M09 Discovery/sampling | internal/media/catalog、internal/media/sampling | 递归扫描、跳过 @eaDir、有限样本水库抽样；无大 NAS 性能基准。 |
-| M10 Streaming | internal/media/streaming | 使用标准库文件流，支持 GET、HEAD、Range、206/416 和私有 no-store 缓存策略；自动化覆盖了主要范围，故障注入不完整。 |
-| M11 Static web | internal/web、client/dist、client/public/env.js | Go 同源托管静态产物、SPA 回退和运行时配置；本地服务闭环通过。 |
-| M12 Logging/errors | internal/app、internal/httpapi | 使用标准库 logger，避免记录密码、Cookie 和媒体路径；未另建 observability 包。 |
-| M13 Shared utilities | access/auth/captcha/session/media 各领域包 | 领域工具留在使用模块中，没有引入集中式通用工具包。 |
-| M14 Build/deployment | Dockerfile、.dockerignore、build.sh、.github/workflows/ci.yml、README.md、README_en.md | 生产配方切为 Go 单进程并复制 Vue dist；脚本实现 host/bridge、只读挂载、健康检查、健康失败回滚和基础预检。Docker、架构构建和真实部署回滚未验证。 |
+| M01 Runtime | server/cmd/nas-tiktok/main.go、server/internal/app/app.go | 单 Go 入口，支持 HTTP/HTTPS、信号处理和优雅关闭；本地启动闭环已验证。 |
+| M02 Configuration | server/internal/config | 类型化配置、启动校验及 server/.env.example；空 ALLOWED_IPS 在本地配置下表示不限制来源，部署应明确设置。 |
+| M03 HTTP | server/internal/httpapi | 路由、统一错误响应、方法/CORS处理、请求体限制、会话与访问策略衔接；含 /healthz、/api/session、/api/logout。 |
+| M04 Network access | server/internal/access | IPv4/IPv6/CIDR、回环和可信代理来源处理；单测通过，Docker 网络拓扑未实测。 |
+| M05 Captcha | server/internal/captcha | 数学 SVG、TTL、单次消费、容量控制和密码学随机数；单测通过。 |
+| M06 Authentication | server/internal/auth、server/internal/httpapi | 单账号环境凭据校验、登录失败处理与限速；未引入数据库或多用户模型。 |
+| M07 Session | server/internal/session、前端 API/router | HttpOnly Cookie、过期和撤销；前端不再把长期 JWT 加入媒体 URL。跨站和真实 Safari 行为未实测。 |
+| M08 Media storage | server/internal/media/catalog、server/internal/media/streaming | 媒体根目录约束、扩展名与 MIME、只读使用方式；目录外访问和符号链接测试通过。 |
+| M09 Discovery/sampling | server/internal/media/catalog、server/internal/media/sampling | 递归扫描、跳过 @eaDir、有限样本水库抽样；无大 NAS 性能基准。 |
+| M10 Streaming | server/internal/media/streaming | 使用标准库文件流，支持 GET、HEAD、Range、206/416 和私有 no-store 缓存策略；自动化覆盖了主要范围，故障注入不完整。 |
+| M11 Static web | server/internal/web、client/dist、client/public/env.js | Go 同源托管静态产物、SPA 回退和运行时配置；本地服务闭环通过。 |
+| M12 Logging/errors | server/internal/app、server/internal/httpapi | 使用标准库 logger，避免记录密码、Cookie 和媒体路径；未另建 observability 包。 |
+| M13 Shared utilities | server/internal/access、server/internal/auth、server/internal/captcha、server/internal/session、server/internal/media 各领域包 | 领域工具留在使用模块中，没有引入集中式通用工具包。 |
+| M14 Build/deployment | Dockerfile、.dockerignore、build.sh、.github/workflows/ci.yml、README.md、README_en.md | 生产配方运行 Go 服务并复制 Vue dist；脚本实现 host/bridge、只读挂载、健康检查、健康失败回滚和基础预检。Docker、架构构建和真实部署回滚未验证。 |
 
 ## 3. API 与配置契约
 
@@ -37,14 +37,13 @@
 | GET/HEAD /api/stream/... | 需要有效会话；支持标准 Range 和媒体流响应。 |
 | POST /api/logout、GET /api/session、GET /healthz | 新增会话登出/检查与健康检查路由。 |
 
-新配置区分 LISTEN_HOST/LISTEN_PORT、API_BASE、APP_URL_PREFIX、MEDIA_ROOT、STATIC_ROOT、TLS_CERT_FILE/TLS_KEY_FILE，并支持 ACCOUNT、PASSWORD、JWT_SECRET、JWT_EXPIRE、ALLOWED_IPS、ALLOW_IPv6、TRUSTED_PROXIES、CORS_ORIGINS、COOKIE_SECURE、COOKIE_SAME_SITE 和限流/容量设置。旧 VITE_API_URL/VITE_API_PORT 仍用于兼容解析。真实部署凭据由运行时提供；报告未复制或读取真实密钥。
+配置项包括 LISTEN_HOST/LISTEN_PORT、API_BASE、APP_URL_PREFIX、MEDIA_ROOT、STATIC_ROOT、TLS_CERT_FILE/TLS_KEY_FILE、ACCOUNT、PASSWORD、JWT_SECRET、JWT_EXPIRE、ALLOWED_IPS、ALLOW_IPv6、TRUSTED_PROXIES、CORS_ORIGINS、COOKIE_SECURE、COOKIE_SAME_SITE 和限流/容量设置。真实部署凭据由运行时提供；报告未复制或读取真实密钥。
 
 ## 4. 变更文件概览
 
-- 新增 server_go/：Go 单入口、配置、访问控制、鉴权、验证码、会话、HTTP API、媒体扫描/抽样/流、静态托管及相应测试。
+- server/：Go 单入口、配置、访问控制、鉴权、验证码、会话、HTTP API、媒体扫描/抽样/流、静态托管及相应测试。
 - 修改 client/：Cookie认证、运行时 API 基址、媒体列表/播放器错误路径及 Vue 类型声明生成结果；升级 package.json 和 package-lock.json。
 - 修改 Dockerfile、.dockerignore、build.sh、README.md、README_en.md；新增 .github/workflows/ci.yml。
-- 新增本报告。未修改原始 function.md、audit.md 和 todo.md。
 
 ### 前端直接依赖版本
 
@@ -98,16 +97,16 @@ npm-run-all2 9.0.3 要求 Node ^22.22.2、^24.15.0 或 >=26，npm >=10。本机 
 | AUDIT-033 | PARTIAL | npm lock/ci、精确 Node 22.23.3 前端构建标签和 Go `-trimpath` 提高可追溯性；基础镜像未固定 digest，未执行镜像扫描或 Docker 构建。 |
 | AUDIT-034 | PARTIAL | build.sh 从当前工作区构建并写入 HEAD/dirty 标签；不校验分支、不指定 Commit，也不拒绝 dirty 工作区。 |
 | AUDIT-035 | PARTIAL | README 已改为 Go 运行方式并描述 host/bridge、端口、只读挂载、TLS 及健康回滚；Docker 启动、TLS、NAS 操作未按文档实际验证。 |
-| AUDIT-036 | OWNER_DECISION | LICENSE 为 GPLv3，README 中英文禁止商业用途，遗留 server/package.json 标为 UNLICENSED；本次未改授权文本，需所有者/法律决策。 |
+| AUDIT-036 | OWNER_DECISION | LICENSE 为 GPLv3，README 中英文禁止商业用途；本次未改授权文本，需所有者/法律决策。 |
 
 ## 6. VERIFY-001–012
 
 | ID | 状态 | 结果 |
 |---|---|---|
-| VERIFY-001 | MITIGATED_BY_REPLACEMENT | Nest/Fastify 通配路由已由 Go 路由替代；编码多级路径集成测试随 Go 测试通过。 |
+| VERIFY-001 | MITIGATED_BY_REPLACEMENT | 编码多级路径 Go 路由集成测试通过。 |
 | VERIFY-002 | VERIFIED（本地测试） | 会话在媒体流前验证；Cookie GET/Range 与匿名 GET/HEAD Range 均有集成测试，未授权响应不返回媒体内容。 |
-| VERIFY-003 | MITIGATED_BY_REPLACEMENT / NOT_RUN | 不再比较请求 Header；TLS/HTTP2 浏览器组合未测。 |
-| VERIFY-004 | MITIGATED_BY_REPLACEMENT / NOT_RUN | 运行入口改为 Go 二进制；Docker 启动未执行。 |
+| VERIFY-003 | MITIGATED_BY_REPLACEMENT / NOT_RUN | TLS/HTTP2 浏览器组合未测。 |
+| VERIFY-004 | MITIGATED_BY_REPLACEMENT / NOT_RUN | Docker 启动未执行。 |
 | VERIFY-005 | PARTIAL / NOT_RUN | 最终配方只复制构建产物且忽略 .env*；未扫描实际镜像层。 |
 | VERIFY-006 | PARTIAL / NOT_RUN | 代理 Header 信任边界有单测；host/bridge/代理网络未实测。 |
 | VERIFY-007 | NOT_RUN | 未使用 Safari/iOS 真机或浏览器验证播放器与 Range。 |
@@ -122,7 +121,7 @@ npm-run-all2 9.0.3 要求 Node ^22.22.2、^24.15.0 或 >=26，npm >=10。本机 
 | ID | 状态 | 自动化覆盖与缺口 |
 |---|---|---|
 | TEST-001 | PARTIAL | auth/captcha/session/httpapi 测试覆盖账号密码要求、验证码错误/过期/并发单次消费、登录限流、Cookie 会话、篡改/过期/撤销及缺少验证码；仍非全部配置/错误故障矩阵。 |
-| TEST-002 | MITIGATED_BY_REPLACEMENT | 单 Go 进程替代 PM2 多进程；没有跨实例共享测试，多副本不受支持。 |
+| TEST-002 | MITIGATED_BY_REPLACEMENT | Go 服务以单进程运行；验证码、会话和限流状态不跨实例共享，多副本部署不受支持。 |
 | TEST-003 | PARTIAL | access 和 httpapi 测试覆盖 CIDR、IPv4/IPv6、代理伪造；实际容器网络未覆盖。 |
 | TEST-004 | PARTIAL | catalog/httpapi 测试覆盖根目录、符号链接、编码穿越和抽样；未覆盖证书/环境文件路径及 NAS 权限/删除故障。 |
 | TEST-005 | PARTIAL | streaming 测试覆盖开区间、定长、后缀、多范围、畸形/反向范围、空文件、HEAD Range 和 416；客户端中断连接未覆盖。 |
@@ -149,7 +148,7 @@ npm-run-all2 9.0.3 要求 Node ^22.22.2、^24.15.0 或 >=26，npm >=10。本机 
 
 实际执行命令：
 
-Go 命令从 server_go/ 执行；前端命令从 client/ 执行；npm 缓存和日志写入 /tmp。
+Go 命令从 server/ 执行；前端命令从 client/ 执行；npm 缓存和日志写入 /tmp。
 
     env GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOPATH=/tmp/nas-tiktok-go-path GOMODCACHE=/tmp/nas-tiktok-go-modcache GOCACHE=/tmp/nas-tiktok-go-cache GOTMPDIR=/tmp go test -count=1 -mod=readonly ./...
     env GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOPATH=/tmp/nas-tiktok-go-path GOMODCACHE=/tmp/nas-tiktok-go-modcache GOCACHE=/tmp/nas-tiktok-go-cache GOTMPDIR=/tmp go vet -mod=readonly ./...
@@ -173,5 +172,5 @@ Go 命令从 server_go/ 执行；前端命令从 client/ 执行；npm 缓存和�
 - 媒体路径边界、编码路径、符号链接和 Range 已有本地测试；未对大型目录、NAS 断连、权限变化和实际 iOS 播放进行故障/兼容性验证。
 - Node 22.23.3 已满足 npm-run-all2 的最低版本要求，Docker 构建与 CI 配置已对齐。实际 Docker 构建/部署前仍需检查镜像内容，并验证启动健康检查、host/bridge、只读挂载、TLS 和失败回滚。
 - 所有者应确认 AUDIT-002 历史凭据是否曾公开并自行轮换；本次未检查或更改外部部署凭据。
-- 所有者/法律顾问需决定 AUDIT-036 实际授权意图，再统一 GPLv3、README 商业用途声明和遗留 server/package.json 元数据。
+- 所有者/法律顾问需决定 AUDIT-036 实际授权意图，并确认 GPLv3 与 README 商业用途声明的一致性。
 - 部署脚本的正常启动/健康失败分支已有恢复逻辑，但 Docker 未运行；脚本收到中断信号时没有自动恢复，默认 TLS 文件可读预检按宿主机当前用户判断而非容器 `app` 用户。Dockerfile 基础镜像未固定 digest，部署脚本未校验分支/干净状态。以上仍是部署风险。
