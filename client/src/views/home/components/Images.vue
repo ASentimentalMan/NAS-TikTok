@@ -28,6 +28,7 @@ const MAX_MEDIA_ITEMS = 200;
 
 // 视频数据
 const images = ref([]);
+let nextMediaItemId = 0;
 
 const swiperInstance = ref(null);
 const isFetching = ref(false);
@@ -98,45 +99,38 @@ const fetchData = async () => {
     if (controller.signal.aborted || isUnmounted) return;
     const list = response.data;
     if (list && list.length > 0) {
-      const existingURLs = new Set(images.value.map((image) => image.url));
-      const newList = list.filter((image) => {
-        if (existingURLs.has(image.url)) return false;
-        existingURLs.add(image.url);
-        return true;
-      });
+      consecutiveFailures = 0;
+      clearRetry();
+      retryAt = 0;
+      const newList = list.map((image) => ({
+        ...image,
+        id: `${props.currentIndex}-${nextMediaItemId++}`,
+      }));
+      const activeIndex = swiperInstance.value?.activeIndex ?? 0;
+      const combined = images.value.concat(newList);
+      const discarded = Math.max(0, combined.length - MAX_MEDIA_ITEMS);
+      images.value = discarded > 0 ? combined.slice(discarded) : combined;
+      console.log("More data loaded, total images:", images.value.length);
 
-      if (newList.length > 0) {
-        consecutiveFailures = 0;
-        clearRetry();
-        retryAt = 0;
-        const activeIndex = swiperInstance.value?.activeIndex ?? 0;
-        const combined = images.value.concat(newList);
-        const discarded = Math.max(0, combined.length - MAX_MEDIA_ITEMS);
-        images.value = discarded > 0 ? combined.slice(discarded) : combined;
-        console.log("More data loaded, total images:", images.value.length);
-
-        // 通知 Swiper Virtual 模块数据已更新
-        await nextTick();
-        if (
-          !isUnmounted &&
-          swiperInstance.value &&
-          swiperInstance.value.virtual &&
-          !swiperInstance.value.destroyed
-        ) {
-          // virtual.update(true) is crucial after adding more data
-          swiperInstance.value.virtual.update(true);
-          if (discarded > 0) {
-            swiperInstance.value.slideTo(Math.max(0, activeIndex - discarded), 0, false);
-          }
-          console.log("Swiper virtual updated");
+      // 通知 Swiper Virtual 模块数据已更新
+      await nextTick();
+      if (
+        !isUnmounted &&
+        swiperInstance.value &&
+        swiperInstance.value.virtual &&
+        !swiperInstance.value.destroyed
+      ) {
+        // virtual.update(true) is crucial after adding more data
+        swiperInstance.value.virtual.update(true);
+        if (discarded > 0) {
+          swiperInstance.value.slideTo(Math.max(0, activeIndex - discarded), 0, false);
         }
-      } else {
-        console.log("No new data to load from the latest fetch.");
-        scheduleRetry();
+        console.log("Swiper virtual updated");
       }
     } else {
       console.log("No more data to load from API.");
-      scheduleRetry();
+      clearRetry();
+      retryAt = Number.POSITIVE_INFINITY;
     }
   } catch (error) {
     if (!controller.signal.aborted && !isUnmounted) {

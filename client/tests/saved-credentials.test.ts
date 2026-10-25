@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+// @vitest-environment-options {"url":"https://localhost/"}
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 class TestCryptoKey {
@@ -153,6 +156,25 @@ describe("encrypted saved credentials", () => {
       account: "saved-user",
       password: "test-password",
     });
+  });
+
+  it("keeps the remember preference across a module reload independently of credentials", async () => {
+    const enabled = storage.setCredentialPreference(true);
+
+    expect(enabled.preferenceWritten).toBe(true);
+    expect(storage.getCredentialPreference()).toBe(true);
+
+    vi.resetModules();
+    storage = await import("@/utils/saved-credentials");
+    expect(storage.getCredentialPreference()).toBe(true);
+    await expect(storage.loadSavedCredentials()).resolves.toMatchObject({ status: "empty" });
+
+    const disabled = storage.setCredentialPreference(false);
+    expect(disabled.preferenceWritten).toBe(true);
+    vi.resetModules();
+    storage = await import("@/utils/saved-credentials");
+    expect(storage.getCredentialPreference()).toBe(false);
+    await expect(storage.loadSavedCredentials()).resolves.toMatchObject({ status: "disabled" });
   });
 
   it("deletes account storage even when IndexedDB open fails", async () => {

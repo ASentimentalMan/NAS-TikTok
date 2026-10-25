@@ -34,4 +34,7 @@ docs/
 *.md
 
 # 忽略资源
-/statics/
+/certs/
+/db/
+/static/
+*.tar

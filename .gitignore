@@ -30,7 +30,8 @@ coverage
 *.tsbuildinfo
 
 /certs
-/server/statics
-/statics/
+/db/
+/server/static
+/static/
 *.tar
 /server/.env.development

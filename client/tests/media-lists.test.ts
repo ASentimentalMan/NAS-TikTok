@@ -36,14 +36,34 @@ vi.mock("swiper/vue", async () => {
 vi.mock("@/components/ImagePlayer.vue", async () => {
   const { defineComponent: component, h: createElement } = await import("vue");
   return {
-    default: component({ name: "MockImagePlayer", setup: () => () => createElement("div") }),
+    default: component({
+      name: "MockImagePlayer",
+      props: { image: { type: Object, required: true } },
+      setup(props) {
+        return () => createElement("div", {
+          class: "mock-media-item",
+          "data-media-id": props.image.id,
+          "data-media-url": props.image.url,
+        });
+      },
+    }),
   };
 });
 
 vi.mock("@/components/VideoPlayer.vue", async () => {
   const { defineComponent: component, h: createElement } = await import("vue");
   return {
-    default: component({ name: "MockVideoPlayer", setup: () => () => createElement("div") }),
+    default: component({
+      name: "MockVideoPlayer",
+      props: { video: { type: Object, required: true } },
+      setup(props) {
+        return () => createElement("div", {
+          class: "mock-media-item",
+          "data-media-id": props.video.id,
+          "data-media-url": props.video.url,
+        });
+      },
+    }),
   };
 });
 
@@ -78,7 +98,7 @@ describe("media feed request lifecycle", () => {
     vi.clearAllMocks();
   });
 
-  it("deduplicates image URLs across consecutive API batches", async () => {
+  it("preserves image URLs returned more than once across API batches", async () => {
     fetchImageListMock
       .mockResolvedValueOnce(items(["/one.jpg", "/two.jpg"]))
       .mockResolvedValueOnce(items(["/two.jpg", "/three.jpg", "/three.jpg"]));
@@ -90,11 +110,15 @@ describe("media feed request lifecycle", () => {
     await flushPromises();
 
     expect(fetchImageListMock).toHaveBeenCalledTimes(2);
-    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(3);
+    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(5);
+    expect(wrapper.findAll(".mock-media-item").map((item) => item.attributes("data-media-url")))
+      .toEqual(["/one.jpg", "/two.jpg", "/two.jpg", "/three.jpg", "/three.jpg"]);
+    const ids = wrapper.findAll(".mock-media-item").map((item) => item.attributes("data-media-id"));
+    expect(new Set(ids).size).toBe(5);
     wrapper.unmount();
   });
 
-  it("deduplicates video URLs across consecutive API batches", async () => {
+  it("preserves video URLs returned more than once across API batches", async () => {
     fetchVideoListMock
       .mockResolvedValueOnce(items(["/one.mp4", "/two.mp4"]))
       .mockResolvedValueOnce(items(["/two.mp4", "/three.mp4", "/three.mp4"]));
@@ -106,7 +130,11 @@ describe("media feed request lifecycle", () => {
     await flushPromises();
 
     expect(fetchVideoListMock).toHaveBeenCalledTimes(2);
-    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(3);
+    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(5);
+    expect(wrapper.findAll(".mock-media-item").map((item) => item.attributes("data-media-url")))
+      .toEqual(["/one.mp4", "/two.mp4", "/two.mp4", "/three.mp4", "/three.mp4"]);
+    const ids = wrapper.findAll(".mock-media-item").map((item) => item.attributes("data-media-id"));
+    expect(new Set(ids).size).toBe(5);
     wrapper.unmount();
   });
 
@@ -155,19 +183,19 @@ describe("media feed request lifecycle", () => {
   it.each([
     ["images", Images, fetchImageListMock],
     ["videos", Videos, fetchVideoListMock],
-  ] as const)("retries an empty %s result and loads later items", async (_name, component, fetchMock) => {
+  ] as const)("does not retry an empty %s result", async (_name, component, fetchMock) => {
     vi.useFakeTimers();
-    fetchMock.mockResolvedValueOnce(items([])).mockResolvedValueOnce(items(["/later.media"]));
+    fetchMock.mockResolvedValue(items([]));
     const wrapper = mount(component);
     await flushMicrotasks();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1000);
+    await wrapper.findComponent({ name: "MockSwiper" }).vm.$emit("slideChange", { activeIndex: 0 });
+    await vi.advanceTimersByTimeAsync(120000);
     await flushMicrotasks();
-    await wrapper.vm.$nextTick();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(wrapper.findAll(".swiper-slide-item")).toHaveLength(0);
     wrapper.unmount();
   });
 

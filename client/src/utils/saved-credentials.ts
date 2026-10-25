@@ -7,6 +7,7 @@ const KEY_ID = "key";
 const CREDENTIAL_ID = "credential";
 const DISABLED_ID = "disabled";
 const DISABLED_STORAGE_KEY = "nas-tiktok.credentials-disabled";
+const REMEMBER_PREFERENCE_KEY = "nas-tiktok.remember-credentials";
 const SAVED_LOGIN_KEY = "savedLogin";
 const FORMAT_VERSION = 1;
 
@@ -156,7 +157,34 @@ const readDisabledStorageMarker = () => {
   }
 };
 
+const readRememberPreference = (): boolean | null => {
+  try {
+    const preference = localStorage.getItem(REMEMBER_PREFERENCE_KEY);
+    if (preference === "1") return true;
+    if (preference === "0") return false;
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+export const getCredentialPreference = () =>
+  isHttpsOrigin() ? readRememberPreference() : null;
+
+const writeRememberPreference = (enabled: boolean) => {
+  try {
+    localStorage.setItem(REMEMBER_PREFERENCE_KEY, enabled ? "1" : "0");
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const isHttpsOrigin = () =>
+  typeof window !== "undefined" && window.location.protocol === "https:";
+
 const hasSavedCredentialSupport = () =>
+  isHttpsOrigin() &&
   typeof window !== "undefined" &&
   window.isSecureContext &&
   typeof indexedDB !== "undefined" &&
@@ -181,9 +209,13 @@ const isValidKey = (value: unknown): value is CryptoKey => {
 };
 
 export const setCredentialPreference = (enabled: boolean) => {
+  if (!isHttpsOrigin()) {
+    return { version: operationVersion, markerWritten: false, preferenceWritten: false };
+  }
   const version = ++operationVersion;
   rememberEnabled = enabled;
-  if (enabled) return { version, markerWritten: false };
+  const preferenceWritten = writeRememberPreference(enabled);
+  if (enabled) return { version, markerWritten: false, preferenceWritten };
 
   memoryDisabled = true;
   let markerWritten = false;
@@ -193,11 +225,17 @@ export const setCredentialPreference = (enabled: boolean) => {
   } catch {
     // The IndexedDB tombstone is attempted separately by clearSavedCredentials.
   }
-  return { version, markerWritten };
+  return { version, markerWritten, preferenceWritten };
 };
 
 export const loadSavedCredentials = async () => {
+  if (!isHttpsOrigin()) {
+    return { status: "unavailable" as const };
+  }
   const startingVersion = operationVersion;
+  if (readRememberPreference() === false) {
+    return { status: "disabled" as const };
+  }
   const disabledMarker = readDisabledStorageMarker();
   if (memoryDisabled || disabledMarker === true) {
     return { status: "disabled" as const };
@@ -334,6 +372,12 @@ export const persistSuccessfulLogin = (
         return {
           status: "failed",
           notice: "登录成功，但当前浏览器不能安全保存密码。",
+        };
+      }
+      if (!writeRememberPreference(true)) {
+        return {
+          status: "failed",
+          notice: "无法保存“记住账号和密码”的设置；本机登录信息未保存。",
         };
       }
       const key = await crypto.subtle.generateKey(

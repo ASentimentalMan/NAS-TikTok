@@ -8,9 +8,15 @@ const { apiMock, routerMock, credentialMock } = vi.hoisted(() => ({
     clearSavedCredentials: vi.fn(),
     credentialOperationVersion: vi.fn(() => 1),
     credentialPersistenceNotice: { value: "" },
+    getCredentialPreference: vi.fn((): boolean | null => null),
+    isHttpsOrigin: vi.fn(() => true),
     loadSavedCredentials: vi.fn(),
     persistSuccessfulLogin: vi.fn(),
-    setCredentialPreference: vi.fn(() => ({ version: 1, markerWritten: false })),
+    setCredentialPreference: vi.fn(() => ({
+      version: 1,
+      markerWritten: false,
+      preferenceWritten: true,
+    })),
   },
 }));
 
@@ -35,9 +41,12 @@ describe("login saved credentials", () => {
     credentialMock.credentialPersistenceNotice.value = "";
     credentialMock.loadSavedCredentials.mockReset().mockResolvedValue({ status: "empty" });
     credentialMock.persistSuccessfulLogin.mockReset().mockResolvedValue({ status: "saved" });
+    credentialMock.getCredentialPreference.mockReset().mockReturnValue(null);
+    credentialMock.isHttpsOrigin.mockReset().mockReturnValue(true);
     credentialMock.setCredentialPreference.mockReset().mockReturnValue({
       version: 1,
       markerWritten: false,
+      preferenceWritten: true,
     });
   });
 
@@ -75,7 +84,7 @@ describe("login saved credentials", () => {
     wrapper.unmount();
   });
 
-  it("navigates after API success and reports asynchronous save failure separately", async () => {
+  it("keeps the password visible and reports a save failure after login success", async () => {
     apiMock.login.mockResolvedValueOnce({ ok: true });
     credentialMock.persistSuccessfulLogin.mockResolvedValueOnce({
       status: "failed",
@@ -91,9 +100,12 @@ describe("login saved credentials", () => {
     await wrapper.get(".button").trigger("click");
     await flushPromises();
 
-    expect(routerMock.replace).toHaveBeenCalledWith({ path: "/" });
+    expect(routerMock.replace).not.toHaveBeenCalled();
     expect(credentialMock.persistSuccessfulLogin).toHaveBeenCalledWith("user", "secret", 1);
     expect(apiMock.captcha).toHaveBeenCalledTimes(1);
+    expect((wrapper.find('input[type="password"]').element as HTMLInputElement).value).toBe("secret");
+    expect((wrapper.find('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.text()).toContain("登录成功，但本机未能安全保存账号密码。");
     expect(credentialMock.credentialPersistenceNotice.value).toBe(
       "登录成功，但本机未能安全保存账号密码。"
     );
@@ -124,6 +136,32 @@ describe("login saved credentials", () => {
     wrapper.unmount();
   });
 
+  it("restores the remembered checkbox even before a saved password is available", async () => {
+    credentialMock.getCredentialPreference.mockReturnValueOnce(true);
+
+    const wrapper = mount(LoginView);
+    await flushPromises();
+
+    expect((wrapper.find('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(true);
+    expect((wrapper.find('input[type="password"]').element as HTMLInputElement).value).toBe("");
+    expect(credentialMock.setCredentialPreference).toHaveBeenCalledWith(true);
+
+    wrapper.unmount();
+  });
+
+  it("hides the remember option and skips credential loading on HTTP", async () => {
+    credentialMock.isHttpsOrigin.mockReturnValueOnce(false);
+
+    const wrapper = mount(LoginView);
+    await flushPromises();
+
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false);
+    expect(credentialMock.getCredentialPreference).not.toHaveBeenCalled();
+    expect(credentialMock.loadSavedCredentials).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+
   it.each([
     { initially: false, finally: true, saves: true },
     { initially: true, finally: false, saves: false },
@@ -149,20 +187,21 @@ describe("login saved credentials", () => {
     wrapper.unmount();
   });
 
-  it("does not apply a decrypt result after remember is cancelled", async () => {
+  it("keeps the typed password and ignores a pending decrypt after remember is cancelled", async () => {
     let resolveRead!: (value: { status: string; account?: string; password?: string }) => void;
     credentialMock.loadSavedCredentials.mockImplementationOnce(
       () => new Promise((resolve) => { resolveRead = resolve; })
     );
 
     const wrapper = mount(LoginView);
+    await wrapper.find('input[type="password"]').setValue("typed-secret");
     await wrapper.find('input[type="checkbox"]').setValue(true);
     await wrapper.find('input[type="checkbox"]').setValue(false);
     resolveRead({ status: "loaded", account: "old-user", password: "old-secret" });
     await flushPromises();
 
     expect((wrapper.findAll("input")[0].element as HTMLInputElement).value).toBe("");
-    expect((wrapper.find('input[type="password"]').element as HTMLInputElement).value).toBe("");
+    expect((wrapper.find('input[type="password"]').element as HTMLInputElement).value).toBe("typed-secret");
     expect((wrapper.find('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false);
     expect(credentialMock.clearSavedCredentials).toHaveBeenCalledTimes(1);
     wrapper.unmount();

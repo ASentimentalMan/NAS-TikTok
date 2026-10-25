@@ -6,12 +6,15 @@ import {
   clearSavedCredentials,
   credentialOperationVersion,
   credentialPersistenceNotice,
+  getCredentialPreference,
+  isHttpsOrigin,
   loadSavedCredentials,
   persistSuccessfulLogin,
   setCredentialPreference,
 } from "@/utils/saved-credentials";
 
 const toastRef = ref();
+const canRememberCredentials = isHttpsOrigin();
 
 const INIT_DATA = {
   account: "",
@@ -45,9 +48,11 @@ const onRememberChange = (event) => {
   remember.value = event.target.checked;
   rememberRevision.value += 1;
   const preference = setCredentialPreference(remember.value);
+  credentialWarning.value = preference.preferenceWritten
+    ? ""
+    : "无法保存记住账号和密码的设置；请检查浏览器存储权限。";
   if (remember.value) return;
 
-  fromData.value.password = "";
   void clearSavedCredentials(preference.version, preference.markerWritten)
     .then((result) => {
       if (!result.versionIsCurrent) return;
@@ -103,24 +108,39 @@ const LogIn = async () => {
   }
 
   const shouldRemember = remember.value;
-  const operation = credentialOperationVersion();
-  void router.replace({ path: "/" });
-
   if (shouldRemember) {
-    void persistSuccessfulLogin(
-      submittedAccount,
-      submittedPassword,
-      operation
-    ).then((result) => {
-      if (credentialOperationVersion() !== operation) return;
-      if (result.status === "failed" || result.notice) {
-        credentialPersistenceNotice.value = result.notice || "本机凭据保存未完成。";
+    let result;
+    try {
+      result = await persistSuccessfulLogin(
+        submittedAccount,
+        submittedPassword,
+        credentialOperationVersion()
+      );
+      if (result.status === "cancelled" && remember.value) {
+        result = await persistSuccessfulLogin(
+          submittedAccount,
+          submittedPassword,
+          credentialOperationVersion()
+        );
       }
-    }).catch(() => {
-      if (credentialOperationVersion() !== operation) return;
+    } catch {
       credentialPersistenceNotice.value = "登录成功，但本机未能安全保存账号密码。";
-    });
+      return;
+    }
+    if (result.status === "failed" && remember.value) {
+      credentialWarning.value = result.notice;
+      credentialPersistenceNotice.value = result.notice;
+      return;
+    }
+    if (result.status === "cancelled" && remember.value) {
+      const message = "登录成功，但本机凭据保存未完成；密码仍保留在当前页面。";
+      credentialWarning.value = message;
+      credentialPersistenceNotice.value = message;
+      return;
+    }
+    if (result.notice) credentialPersistenceNotice.value = result.notice;
   }
+  void router.replace({ path: "/" });
 };
 
 // 清除输入内容
@@ -170,6 +190,20 @@ onMounted(() => {
     }
   }
 
+  if (!canRememberCredentials) {
+    getCaptcha();
+    return;
+  }
+
+  const storedPreference = getCredentialPreference();
+  if (storedPreference !== null) remember.value = storedPreference;
+  if (storedPreference === true) {
+    const preference = setCredentialPreference(true);
+    if (!preference.preferenceWritten) {
+      credentialWarning.value = "无法保存记住账号和密码的设置；请检查浏览器存储权限。";
+    }
+  }
+
   const inputAtStart = inputRevision.value;
   const rememberAtStart = rememberRevision.value;
   const operationAtStart = credentialOperationVersion();
@@ -184,7 +218,10 @@ onMounted(() => {
         fromData.value.account = saved.account;
         fromData.value.password = saved.password;
         remember.value = true;
-        setCredentialPreference(true);
+        const preference = setCredentialPreference(true);
+        if (!preference.preferenceWritten) {
+          credentialWarning.value = "密码已保存，但无法保存记住账号和密码的设置。";
+        }
       } else if (saved.status === "unavailable") {
         credentialWarning.value = "无法读取安全保存的密码；请手动输入。";
       }
@@ -251,7 +288,7 @@ onMounted(() => {
         <img :src="captchaData.data" @click="getCaptcha" />
       </div>
 
-      <div class="remember-me-container">
+      <div v-if="canRememberCredentials" class="remember-me-container">
         <input
           type="checkbox"
           id="rememberMe"

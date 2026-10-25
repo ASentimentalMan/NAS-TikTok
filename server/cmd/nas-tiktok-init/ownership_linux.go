@@ -434,7 +434,7 @@ func databaseFileName(workspace string) (string, bool) {
 
 func protectedWorkspacePaths(workspace string) []string {
 	paths := []string{
-		filepath.Join(workspace, "statics"),
+		filepath.Join(workspace, "static"),
 		filepath.Join(workspace, "certs"),
 	}
 	mediaRoot := os.Getenv("MEDIA_ROOT")

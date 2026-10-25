@@ -88,7 +88,7 @@ func TestRepairWorkspaceTreeRejectsSymlinksAndSkipsMountsAndProtectedPaths(t *te
 	t.Run("skips mounts and protected paths before opening entries", func(t *testing.T) {
 		workspace := t.TempDir()
 		mountedPath := filepath.Join(workspace, "mounted")
-		protectedPath := filepath.Join(workspace, "statics")
+		protectedPath := filepath.Join(workspace, "static")
 		for _, directory := range []string{mountedPath, protectedPath} {
 			if err := os.Mkdir(directory, 0o700); err != nil {
 				t.Fatal(err)
@@ -125,7 +125,7 @@ func TestPrepareWorkspaceSkipsTreeWhenMarkerAndDatabaseOwnershipMatch(t *testing
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	t.Setenv("DB_PATH", databasePath)
-	t.Setenv("MEDIA_ROOT", filepath.Join(workspace, "statics"))
+	t.Setenv("MEDIA_ROOT", filepath.Join(workspace, "static"))
 	t.Setenv("TLS_CERT_FILE", "")
 	t.Setenv("TLS_KEY_FILE", "")
 

@@ -5,7 +5,7 @@ set -euo pipefail
 # ==== 常量定义 ====
 readonly REPO_URL="https://github.com/ASentimentalMan/NAS-TikTok.git"
 readonly REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly WORK_DIR="$HOME/workspace/pm2/NAS-TikTok"
+readonly WORK_DIR="$HOME/workspace/NAS-TikTok"
 readonly ENV_FILE="$WORK_DIR/.env"
 readonly IMAGE_NAME="nas-tiktok"
 readonly CONTAINER_NAME="nas-tiktok"
@@ -261,7 +261,7 @@ deploy() {
     exit 0
   fi
 
-  mkdir -p "$WORK_DIR/certs" "$WORK_DIR/statics" "$WORK_DIR/db"
+  mkdir -p "$WORK_DIR/certs" "$WORK_DIR/static" "$WORK_DIR/db"
 
   local network_args=()
   if [[ "$network_mode" == "bridge" ]]; then
@@ -285,7 +285,7 @@ deploy() {
     --env STATIC_ROOT=/workspace/client/dist \
     "${network_args[@]}" \
     -v "$WORK_DIR/certs:/workspace/certs:ro" \
-    -v "$WORK_DIR/statics:/workspace/static:ro" \
+    -v "$WORK_DIR/static:/workspace/static:ro" \
     -v "$WORK_DIR/db:/workspace/db" \
     --restart unless-stopped \
     "${IMAGE_NAME}:${TAG}" >/dev/null; then

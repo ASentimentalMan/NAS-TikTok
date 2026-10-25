@@ -206,7 +206,7 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 
 	mediaRoot := first("MEDIA_ROOT")
 	if mediaRoot == "" {
-		mediaRoot = filepath.Join("server", "statics")
+		mediaRoot = filepath.Join("server", "static")
 	}
 	mediaRoot, err = filepath.Abs(mediaRoot)
 	if err != nil {
