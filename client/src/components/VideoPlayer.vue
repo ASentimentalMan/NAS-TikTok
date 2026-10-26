@@ -24,10 +24,11 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  preloadMode: { type: String, default: "metadata" },
+  feedActive: { type: Boolean, default: true },
 });
-const standalone = inject("standalone");
-// 是否第一次播放
-let isFirstPlay = true;
+const standalone = inject("standalone", ref(false));
+const standaloneValue = computed(() => standalone?.value ?? standalone ?? false);
 /*播放状态*/
 const SlideItemPlayStatus = {
   Play: "Play",
@@ -46,6 +47,119 @@ let authCheckController = null;
 let authCheckTimer = null;
 let authCheckInFlight = false;
 let componentUnmounted = false;
+let mediaGeneration = 0;
+let playbackOperation = 0;
+let assignedOccurrence = null;
+let assignedRecord = props.video;
+let preparedGeneration = -1;
+let mediaListeners = [];
+let lastPlaybackIntent = false;
+const bufferedSeconds = ref(0);
+const bufferReady = ref(false);
+const mediaReadyState = ref(0);
+const mediaIdentity = () => `${props.video.id ?? ""}\u0000${props.video.url ?? ""}`;
+const currentGeneration = () => mediaGeneration;
+const cancelAuthCheck = () => {
+  const controller = authCheckController;
+  if (authCheckTimer !== null) window.clearTimeout(authCheckTimer);
+  authCheckTimer = null;
+  authCheckController = null;
+  authCheckInFlight = false;
+  controller?.abort();
+};
+const updateBufferedSeconds = () => {
+  const element = videoRef.value;
+  mediaReadyState.value = element?.readyState ?? 0;
+  if (!element || element.readyState < 1 || !Number.isFinite(element.duration)) {
+    bufferedSeconds.value = 0;
+    bufferReady.value = false;
+    return;
+  }
+  const target = Number(props.video.currentTime ?? props.video.randomStartTime ?? 0);
+  for (let i = 0; i < element.buffered.length; i += 1) {
+    if (element.buffered.start(i) <= target && element.buffered.end(i) >= target) {
+      bufferedSeconds.value = Math.max(0, element.buffered.end(i) - target);
+      const requiredSeconds = Math.min(3, Math.max(0, element.duration - target));
+      bufferReady.value = element.duration > 0 && target < element.duration && requiredSeconds > 0 && bufferedSeconds.value >= requiredSeconds;
+      return;
+    }
+  }
+  bufferedSeconds.value = 0;
+  bufferReady.value = false;
+};
+const applySource = () => {
+  const element = videoRef.value;
+  if (!element) return;
+  const identity = mediaIdentity();
+  if (assignedOccurrence === identity) return;
+  if (assignedRecord && assignedRecord !== props.video && preparedGeneration === mediaGeneration && videoRef.value?.readyState >= 1) {
+    assignedRecord.currentTime = videoRef.value.currentTime;
+  }
+  mediaListeners.forEach(([name, handler]) => element.removeEventListener(name, handler));
+  mediaListeners = [];
+  assignedOccurrence = identity;
+  assignedRecord = props.video;
+  mediaGeneration += 1;
+  preparedGeneration = -1;
+  playbackOperation += 1;
+  cancelAuthCheck();
+  element.pause();
+  element.playbackRate = 1;
+  element.removeAttribute("src");
+  const url = props.video.url;
+  element.preload = props.feedActive ? props.preloadMode : "none";
+  element.muted = !props.feedActive || !props.isActive || mutedValue.value;
+  state.duration = 0;
+  state.currentTime = 0;
+  state.playX = 0;
+  state.status = SlideItemPlayStatus.Stop;
+  isLoading.value = Boolean(url);
+  bufferedSeconds.value = 0;
+  bufferReady.value = false;
+  mediaReadyState.value = 0;
+  videoState.isSpeedLocked = false;
+  videoState.isLongPressingSpeed = false;
+  videoState.slidBeyondThreshold = false;
+  videoState.lockToggledThisGesture = false;
+  if (videoState.longPressTimer) clearTimeout(videoState.longPressTimer);
+  videoState.longPressTimer = null;
+  if (transitionResetTimeout) clearTimeout(transitionResetTimeout);
+  transitionResetTimeout = null;
+  if (progressSeekTimeout) clearTimeout(progressSeekTimeout);
+  progressSeekTimeout = null;
+  if (touchedTimeout.value) clearTimeout(touchedTimeout.value);
+  touchedTimeout.value = null;
+  touched.value = false;
+  state.isMove = false;
+  rotationAngle.value = 0;
+  videoOriginalDimensions.width = 0;
+  videoOriginalDimensions.height = 0;
+  if (url && props.feedActive && props.preloadMode !== "none") {
+    element.src = url;
+    element.load();
+    bindMediaEvents();
+  }
+};
+watch(() => [props.video.id, props.video.url], applySource);
+const syncPlaybackPolicy = () => {
+  const element = videoRef.value;
+  if (!element) return;
+  element.preload = props.feedActive ? props.preloadMode : "none";
+  element.muted = !props.feedActive || !props.isActive || mutedValue.value;
+  const shouldPlay = props.isActive && props.feedActive;
+  const activationChanged = shouldPlay && !lastPlaybackIntent;
+  lastPlaybackIntent = shouldPlay;
+  if (!shouldPlay) {
+    pause();
+    cancelAuthCheck();
+  }
+  if (props.feedActive && props.preloadMode !== "none" && props.video.url && !element.getAttribute("src")) {
+    element.src = props.video.url;
+    element.load();
+    bindMediaEvents();
+  }
+  if (activationChanged && preparedGeneration === mediaGeneration) play();
+};
 const onTouchStart = () => {
   touched.value = true;
   if (touchedTimeout.value) {
@@ -91,10 +205,8 @@ const videoState = reactive({
 // **新增：工具按钮相关状态**
 const rotationAngle = ref(0); // 视频旋转角度，初始为0
 // 静音状态
-const muted = inject("muted", {
-  type: Boolean,
-  default: true,
-});
+const muted = inject("muted", ref(true));
+const mutedValue = computed(() => muted?.value ?? true);
 
 // **新增：用于存储容器和视频原始尺寸的状态**
 const containerDimensions = reactive({ width: 0, height: 0 });
@@ -167,18 +279,33 @@ const speedIndicatorComputedText = computed(() => {
 const toastRef = ref();
 const play = async () => {
   const videoElement = videoRef.value;
-  if (!videoElement) return;
+  if (
+    !videoElement ||
+    !props.isActive ||
+    !props.feedActive ||
+    !props.video.url ||
+    preparedGeneration !== mediaGeneration
+  ) return;
+  const generation = currentGeneration();
+  const operation = ++playbackOperation;
 
   // 注意: 移动端浏览器（尤其是 Safari）对自动播放有限制
   // 通常需要设置 muted=true 或用户交互才能成功播放
   // 处理 play() 返回的 Promise，捕获自动播放失败的情况
   try {
     await videoElement.play();
-    if (videoRef.value !== videoElement) return;
+    if (
+      videoRef.value !== videoElement ||
+      generation !== currentGeneration() ||
+      operation !== playbackOperation ||
+      !props.isActive ||
+      !props.feedActive
+    ) return;
     state.status = SlideItemPlayStatus.Play;
     isLoading.value = false;
   } catch (error) {
-    if (videoRef.value !== videoElement) return;
+    if (videoRef.value !== videoElement || generation !== currentGeneration() || operation !== playbackOperation) return;
+    if (error?.name === "AbortError") return;
     state.status = SlideItemPlayStatus.Stop;
     isLoading.value = false;
     isLoading.value = videoElement.readyState < 3; // Check if enough data is buffered to play
@@ -187,7 +314,16 @@ const play = async () => {
 };
 
 const pause = () => {
+  playbackOperation += 1;
   const videoElement = videoRef.value;
+  if (
+    preparedGeneration === mediaGeneration &&
+    assignedRecord &&
+    videoElement &&
+    Number.isFinite(videoElement.currentTime)
+  ) {
+    assignedRecord.currentTime = videoElement.currentTime;
+  }
   if (videoElement && !videoElement.paused) {
     state.status = SlideItemPlayStatus.Pause;
     videoElement.pause();
@@ -282,32 +418,37 @@ const seekRandom = () => {
   if (Number.isFinite(duration) && duration > 5) {
     const maxSeekTime = duration - 5;
     const randomTime = Math.random() * maxSeekTime;
+    props.video.randomStartTime = randomTime;
+    props.video.currentTime = randomTime;
     videoElement.currentTime = randomTime;
     state.currentTime = Math.floor(randomTime);
   } else if (Number.isFinite(duration)) {
+    props.video.randomStartTime = 0;
+    props.video.currentTime = 0;
     videoElement.currentTime = 0;
     state.currentTime = 0;
   }
 
-  play();
+  if (props.isActive && props.feedActive) play();
   return true;
 };
 
 // 4. 静音切换
 const toggleMute = () => {
-  muted.value = !muted.value;
+  muted.value = !mutedValue.value;
+  if (!props.isActive || !props.feedActive || preparedGeneration !== mediaGeneration) return;
+  const element = videoRef.value;
+  if (!element) return;
+  element.muted = mutedValue.value;
+  if (!mutedValue.value) play();
 };
 
 // --- Watchers ---
+watch(() => [props.feedActive, props.preloadMode, props.isActive, mutedValue.value], syncPlaybackPolicy);
 watch(
   () => props.isActive,
   (newValue) => {
     if (newValue) {
-      if (props.randomPlay && isFirstPlay) {
-        if (seekRandom()) isFirstPlay = false;
-      } else {
-        play();
-      }
       // 确保在激活时，如果速度被锁定，保持2x；否则恢复1x
       if (videoState.isSpeedLocked) {
         setPlaybackRate(2);
@@ -592,6 +733,8 @@ const updateVideoOriginalDimensions = () => {
 
 // 使用具名函数，以便在 onUnmounted 中正确移除
 const handleLoadedMetadata = () => {
+  if (!videoRef.value || videoRef.value.readyState < 1) return;
+  updateBufferedSeconds();
   const videoDuration = videoRef.value?.duration;
   state.duration = Number.isFinite(videoDuration) ? videoDuration : 0;
   // 确保 progressRef 尺寸已获取
@@ -620,19 +763,35 @@ const handleLoadedMetadata = () => {
 
   // 确保视频加载元数据后，如果 isActive 为 true，就尝试播放
   // 这是处理初始加载的关键
-  if (props.isActive) {
-    if (props.randomPlay && isFirstPlay) {
-      if (seekRandom()) isFirstPlay = false;
-    } else {
-      play();
+  if (preparedGeneration !== mediaGeneration) {
+    const initialTarget = props.randomPlay
+      ? (Number.isFinite(props.video.randomStartTime)
+          ? props.video.randomStartTime
+          : (state.duration > 5 ? Math.random() * (state.duration - 5) : 0))
+      : 0;
+    if (props.randomPlay && !Number.isFinite(props.video.randomStartTime)) {
+      props.video.randomStartTime = initialTarget;
     }
+    const restore = Number(props.video.currentTime ?? initialTarget);
+    if (videoRef.value && Number.isFinite(restore)) {
+      videoRef.value.currentTime = restore;
+      state.currentTime = Math.floor(restore);
+      state.playX = state.duration > 0
+        ? (restore / state.duration) * state.progressBarRect.width
+        : 0;
+    }
+    preparedGeneration = mediaGeneration;
+    updateBufferedSeconds();
   }
+  if (props.isActive && props.feedActive) play();
 };
 
 // 使用具名函数，以便在 onUnmounted 中正确移除
 const handleTimeUpdate = (e) => {
+  if (preparedGeneration !== mediaGeneration || e.target.readyState < 1) return;
   // 只有当不在拖动进度条时才更新进度条显示
   if (!state.isMove) {
+    if (assignedRecord) assignedRecord.currentTime = e.target.currentTime;
     state.currentTime = Math.floor(e.target.currentTime); // 使用 Math.floor 更符合常规时间显示
     // 确保 currentTime 不超过 duration
     if (state.currentTime > state.duration) state.currentTime = state.duration;
@@ -675,6 +834,9 @@ const handleEnded = () => {
 
 const handleVideoError = async (event) => {
   if (event.type !== "error") return;
+  const generation = currentGeneration();
+  const failedUrl = props.video.url;
+  if (!failedUrl || !props.isActive || !props.feedActive) return;
   isLoading.value = false;
   state.status = SlideItemPlayStatus.Stop;
   if (authCheckInFlight || componentUnmounted) return;
@@ -689,11 +851,12 @@ const handleVideoError = async (event) => {
   }, 5000);
 
   try {
-    const response = await fetch(props.video.url, {
+    const response = await fetch(failedUrl, {
       method: "HEAD",
       credentials: "include",
       signal: controller.signal,
     });
+    if (generation !== currentGeneration() || !props.isActive || !props.feedActive || authCheckController !== controller) return;
     if (response.status === 401) {
       videoRef.value?.pause();
       try {
@@ -713,19 +876,53 @@ const handleVideoError = async (event) => {
       messages[response.status] ||
         (response.ok ? "视频加载失败，请检查文件格式或稍后重试" : "视频服务暂不可用")
     );
-  } catch {
-    if (componentUnmounted) return;
+  } catch (error) {
+    if (componentUnmounted || generation !== currentGeneration() || authCheckController !== controller || !props.isActive || !props.feedActive) return;
+    if (error?.name === "AbortError" && !timedOut) return;
     toastRef.value?.show(
       timedOut
         ? "登录状态确认超时，未判定为登录失效。"
         : "视频网络异常，请检查连接后重试"
     );
   } finally {
-    if (authCheckTimer !== null) window.clearTimeout(authCheckTimer);
-    authCheckTimer = null;
-    if (authCheckController === controller) authCheckController = null;
-    authCheckInFlight = false;
+    if (authCheckController === controller) {
+      if (authCheckTimer !== null) window.clearTimeout(authCheckTimer);
+      authCheckTimer = null;
+      authCheckController = null;
+      authCheckInFlight = false;
+    }
   }
+};
+
+const bindMediaEvents = () => {
+  const element = videoRef.value;
+  if (!element || !element.getAttribute("src")) return;
+  mediaListeners.forEach(([name, handler]) => element.removeEventListener(name, handler));
+  mediaListeners = [];
+  const generation = mediaGeneration;
+  const identity = assignedOccurrence;
+  const bind = (name, callback) => {
+    const handler = (event) => {
+      if (
+        generation !== mediaGeneration ||
+        identity !== assignedOccurrence ||
+        identity !== mediaIdentity() ||
+        element !== videoRef.value ||
+        (name !== "error" && element.readyState < 1)
+      ) return;
+      callback(event);
+    };
+    element.addEventListener(name, handler);
+    mediaListeners.push([name, handler]);
+  };
+  bind("loadedmetadata", handleLoadedMetadata);
+  bind("timeupdate", handleTimeUpdate);
+  bind("ended", handleEnded);
+  bind("error", handleVideoError);
+  bind("progress", updateBufferedSeconds);
+  bind("canplay", updateBufferedSeconds);
+  bind("seeked", updateBufferedSeconds);
+  bind("durationchange", updateBufferedSeconds);
 };
 
 // 使用具名函数，以便在 onUnmounted 中正确移除
@@ -791,10 +988,8 @@ onMounted(() => {
 
   // 确保 videoRef.value 在添加事件监听器时可用
   if (videoRef.value) {
-    videoRef.value.addEventListener("loadedmetadata", handleLoadedMetadata);
-    videoRef.value.addEventListener("timeupdate", handleTimeUpdate);
-    videoRef.value.addEventListener("ended", handleEnded);
-    videoRef.value.addEventListener("error", handleVideoError);
+    applySource();
+    syncPlaybackPolicy();
     videoRef.value.addEventListener("transitionend", handleTransitionEnd);
     if (videoRef.value.readyState >= 1) handleLoadedMetadata();
   } else {
@@ -805,12 +1000,10 @@ onMounted(() => {
   window.addEventListener("resize", handleWindowResize);
 });
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
   componentUnmounted = true;
-  if (authCheckTimer !== null) window.clearTimeout(authCheckTimer);
-  authCheckTimer = null;
-  authCheckController?.abort();
-  authCheckController = null;
+  mediaGeneration += 1;
+  cancelAuthCheck();
   pause(); // Ensure video is paused on unmount
   // 清理长按定时器
   if (videoState.longPressTimer) {
@@ -843,10 +1036,8 @@ onUnmounted(() => {
   // 移除事件监听器
   const videoElement = videoRef.value;
   if (videoElement) {
-    videoElement.removeEventListener("loadedmetadata", handleLoadedMetadata);
-    videoElement.removeEventListener("timeupdate", handleTimeUpdate);
-    videoElement.removeEventListener("ended", handleEnded);
-    videoElement.removeEventListener("error", handleVideoError);
+    mediaListeners.forEach(([name, handler]) => videoElement.removeEventListener(name, handler));
+    mediaListeners = [];
     // **新增：移除 transitionend 监听器**
     videoElement.removeEventListener("transitionend", handleTransitionEnd);
     // 确保移除临时设置的 transition 属性，虽然 unmount 后元素会销毁
@@ -863,8 +1054,11 @@ onUnmounted(() => {
     <video
       ref="videoRef"
       crossorigin="use-credentials"
-      :muted="muted"
-      preload="metadata"
+      :muted="!feedActive || !isActive || mutedValue"
+      :preload="feedActive ? preloadMode : 'none'"
+      :data-ready-state="mediaReadyState"
+      :data-buffered-seconds="bufferedSeconds"
+      :data-buffer-ready="bufferReady"
       loop
       x5-video-player-type="h5-page"
       :x5-video-player-fullscreen="false"
@@ -876,7 +1070,6 @@ onUnmounted(() => {
         transform: `rotate(${rotationAngle}deg) scale(${scaleFactor})`,
       }"
     >
-      <source :src="video.url" />
       <p>您的浏览器不支持 video 标签。</p>
     </video>
     <Loading v-if="isLoading" style="position: absolute" />
@@ -904,7 +1097,7 @@ onUnmounted(() => {
     <div
       class="swiper-no-swiping tools"
       :class="{ active: touched }"
-      :style="standalone ? 'bottom: 32px' : ''"
+      :style="standaloneValue ? 'bottom: 32px' : ''"
       @touchstart.stop="onTouchStart"
       @touchend.stop="onTouchEnd"
     >
@@ -918,7 +1111,7 @@ onUnmounted(() => {
       <img class="tool-button" :src="NarrowIcon" @click.stop="seekRandom" />
       <MusicBase
         @click.stop="toggleMute"
-        :muted="muted"
+        :muted="mutedValue"
         :is-playing="isPlaying"
         :index="props.index"
       />
@@ -928,7 +1121,7 @@ onUnmounted(() => {
       ref="progressRef"
       class="swiper-no-swiping progress"
       :class="progressClass"
-      :style="standalone ? 'bottom: 70px' : ''"
+      :style="standaloneValue ? 'bottom: 70px' : ''"
       @click="null"
       @touchstart="touchstart"
       @touchmove="touchmove"

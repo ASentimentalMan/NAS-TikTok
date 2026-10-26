@@ -1,47 +1,46 @@
 <script setup>
-import { onUnmounted, ref } from "vue";
-// 引入 Swiper Vue 组件
+import { onMounted, onUnmounted, ref } from "vue";
 import { Swiper, SwiperSlide } from "swiper/vue";
-// 引入 Swiper 核心样式和所需模块的样式
 import "swiper/css";
-import "swiper/css/virtual"; // 虚拟模块样式
 
-// 引入 Swiper 模块
-import { Virtual } from "swiper/modules";
-
-// 引入 VideoPlayer 组件
 import VideoPlayer from "@/components/VideoPlayer.vue";
 import { fetchVideoList } from "@/apis/index";
+
 const props = defineProps({
   currentIndex: {
     type: Number,
     default: 0,
   },
 });
-const activeTabIndex = inject("activeTabIndex", {
-  type: Number,
-  default: 1,
-});
-// 静音状态
-const muted = inject("muted", {
-  type: Boolean,
-  default: true,
-});
-// 模块只保留 Virtual
-const modules = [Virtual];
-const MAX_MEDIA_ITEMS = 200;
 
-// 视频数据
-const videos = ref([]);
-let nextMediaItemId = 0;
+const activeTabIndex = inject("activeTabIndex", ref(1));
 
+const SLOT_COUNT = 5;
+const EMPTY_VIDEO = Object.freeze({ id: "empty", url: "" });
+const slotIds = Array.from({ length: SLOT_COUNT }, (_, slotId) => slotId);
+const slots = ref(
+  slotIds.map((slotId) => ({
+    slotId,
+    logicalIndex: -1,
+    video: EMPTY_VIDEO,
+  }))
+);
+const logicalHistory = ref([]);
+const currentLogicalIndex = ref(0);
+const navigationLogicalIndex = ref(0);
 const swiperInstance = ref(null);
-const isFetching = ref(false);
+let nextOccurrenceId = 0;
+let isFetching = false;
 let activeRequest = null;
 let retryTimer = null;
 let retryAt = 0;
 let consecutiveFailures = 0;
 let isUnmounted = false;
+let lastSettledSlot = 0;
+let initialized = false;
+const isTransitioning = ref(false);
+let pendingTransition = null;
+let exhausted = false;
 
 const clearRetry = () => {
   if (retryTimer !== null) clearTimeout(retryTimer);
@@ -58,52 +57,98 @@ const scheduleRetry = () => {
     if (!isUnmounted) void fetchData();
   }, delay);
 };
-// playingIndex 和 isPlaying 状态现在主要由 Swiper 的 activeIndex 驱动
-// 如果需要全局的播放状态，可以根据 swiperInstance?.activeIndex 来判断
-// 加载视频数据的方法
+
+const ensureOccurrence = (logicalIndex) => {
+  if (logicalIndex < 0) return null;
+  return logicalHistory.value[logicalIndex] || null;
+};
+
+const syncSlots = () => {
+  const current = currentLogicalIndex.value;
+  const firstLogicalIndex = Math.max(0, current - 2);
+  const lastLogicalIndex = current + 2;
+  const slotContents = new Map();
+
+  for (
+    let logicalIndex = firstLogicalIndex;
+    logicalIndex <= lastLogicalIndex;
+    logicalIndex += 1
+  ) {
+    const video = ensureOccurrence(logicalIndex);
+    if (video) slotContents.set(logicalIndex % SLOT_COUNT, { logicalIndex, video });
+  }
+
+  slots.value = slots.value.map((slot) => {
+    const content = slotContents.get(slot.slotId);
+    if (!content) {
+      if (slot.video === EMPTY_VIDEO && slot.logicalIndex === -1) return slot;
+      return { ...slot, logicalIndex: -1, video: EMPTY_VIDEO };
+    }
+    if (slot.logicalIndex === content.logicalIndex && slot.video === content.video) return slot;
+    return { ...slot, logicalIndex: content.logicalIndex, video: content.video };
+  });
+};
+
+const initializeHistory = () => {
+  if (initialized || logicalHistory.value.length === 0) return;
+  initialized = true;
+  currentLogicalIndex.value = 0;
+  navigationLogicalIndex.value = 0;
+  lastSettledSlot = swiperInstance.value?.realIndex % SLOT_COUNT || 0;
+  syncSlots();
+  if (swiperInstance.value && !swiperInstance.value.destroyed) {
+    swiperInstance.value.allowSlidePrev = false;
+    swiperInstance.value.allowSlideNext = logicalHistory.value.length > 1;
+    swiperInstance.value.slideToLoop(0, 0, false);
+  }
+};
+
+const updateSlidePermissions = () => {
+  const swiper = swiperInstance.value;
+  if (!swiper || swiper.destroyed) return;
+  swiper.allowSlidePrev = initialized && navigationLogicalIndex.value > 0;
+  swiper.allowSlideNext =
+    initialized && navigationLogicalIndex.value + 1 < logicalHistory.value.length;
+};
+
+const maybeFetchMore = () => {
+  if (
+    initialized &&
+    !exhausted &&
+    currentLogicalIndex.value >= logicalHistory.value.length - 5
+  ) {
+    void fetchData();
+  }
+};
+
 const fetchData = async () => {
-  if (isUnmounted || isFetching.value || Date.now() < retryAt) return;
+  if (isUnmounted || isFetching || Date.now() < retryAt) return;
 
   const controller = new AbortController();
   activeRequest = controller;
-  isFetching.value = true;
+  isFetching = true;
   try {
     const response = await fetchVideoList(controller.signal);
     if (controller.signal.aborted || isUnmounted) return;
-    const list = response.data;
-    if (list && list.length > 0) {
+    const list = Array.isArray(response.data) ? response.data : [];
+    if (list.length > 0) {
       consecutiveFailures = 0;
       clearRetry();
       retryAt = 0;
-      const newList = list.map((video) => ({
-        ...video,
-        id: `${props.currentIndex}-${nextMediaItemId++}`,
-      }));
-      const activeIndex = swiperInstance.value?.activeIndex ?? 0;
-      const combined = videos.value.concat(newList);
-      const discarded = Math.max(0, combined.length - MAX_MEDIA_ITEMS);
-      videos.value = discarded > 0 ? combined.slice(discarded) : combined;
-      console.log("More data loaded, total videos:", videos.value.length);
-
-      // 通知 Swiper Virtual 模块数据已更新
-      await nextTick();
-      if (
-        !isUnmounted &&
-        swiperInstance.value &&
-        swiperInstance.value.virtual &&
-        !swiperInstance.value.destroyed
-      ) {
-        // virtual.update(true) is crucial after adding more data
-        swiperInstance.value.virtual.update(true);
-        if (discarded > 0) {
-          swiperInstance.value.slideTo(Math.max(0, activeIndex - discarded), 0, false);
-        }
-        console.log("Swiper virtual updated");
-      }
+      logicalHistory.value.push(
+        ...list.map((item) => ({
+          id: `${props.currentIndex}-occurrence-${nextOccurrenceId++}`,
+          url: typeof item === "string" ? item : item?.url,
+        }))
+      );
+      initializeHistory();
+      if (!isTransitioning.value) syncSlots();
+      updateSlidePermissions();
     } else {
-      console.log("No more data to load.");
+      exhausted = true;
       clearRetry();
       retryAt = Number.POSITIVE_INFINITY;
+      updateSlidePermissions();
     }
   } catch (error) {
     if (!controller.signal.aborted && !isUnmounted) {
@@ -112,56 +157,106 @@ const fetchData = async () => {
       } else {
         clearRetry();
         retryAt = Number.POSITIVE_INFINITY;
+        exhausted = true;
+        updateSlidePermissions();
       }
       console.error("Error loading more videos:", error);
     }
   } finally {
     if (activeRequest === controller) activeRequest = null;
-    isFetching.value = false;
+    isFetching = false;
+    if (logicalHistory.value.length === 1 && !exhausted) void fetchData();
   }
 };
 
-// --- Swiper 事件和视频控制 ---
 const onSwiper = (swiper) => {
   swiperInstance.value = swiper;
-  console.log("Swiper initialized");
-  // 可以在这里做一些初始化操作
-  // 第一个视频的播放由 VideoPlayer 组件自身的 onMounted 和 isActive 监听器处理
-  // 确保数据加载完成且DOM更新后再尝试播放
-  nextTick(() => {
-    if (videos.value.length > 0 && swiperInstance.value) {
-      // 如果 Swiper 初始化时 activeIndex 已经是 0，isActive 会是 true
-      // VideoPlayer 会尝试播放
-      // 如果需要在 Swiper 初始化后强制播放，可以在数据加载完成后调用 slideTo(0)
-      console.log(
-        "onSwiper: Videos loaded and swiper instance ready. Active index:",
-        swiper.activeIndex
-      );
-      // The VideoPlayer for index 0 will get isActive=true and handle play
-    }
-  });
+  lastSettledSlot = swiper.realIndex % SLOT_COUNT;
+  navigationLogicalIndex.value = currentLogicalIndex.value;
+  updateSlidePermissions();
+  initializeHistory();
 };
 
-// 定义一个加载更多的阈值
-const loadMoreThreshold = 5; // 当滑动到倒数第5个视频时开始加载更多
-const onSlideChange = (swiper) => {
-  console.log("Slide changed to: ", swiper.activeIndex);
-  // VideoPlayer 子组件会根据 isActive prop (index === swiper.activeIndex) 自动暂停旧视频并播放新视频
+const onTransitionStart = (swiper) => {
+  if (!initialized || swiper.destroyed) return;
+  const targetSlot = swiper.realIndex % SLOT_COUNT;
+  const forwardDistance = (targetSlot - lastSettledSlot + SLOT_COUNT) % SLOT_COUNT;
+  const backwardDistance = (lastSettledSlot - targetSlot + SLOT_COUNT) % SLOT_COUNT;
+  const distance = forwardDistance <= 2 ? forwardDistance : -backwardDistance;
+  const targetLogicalIndex = currentLogicalIndex.value + distance;
+  isTransitioning.value = true;
+  navigationLogicalIndex.value =
+    targetLogicalIndex >= 0 && targetLogicalIndex < logicalHistory.value.length
+      ? targetLogicalIndex
+      : currentLogicalIndex.value;
+  pendingTransition = {
+    fromSlot: lastSettledSlot,
+    toSlot: targetSlot,
+    targetLogicalIndex:
+      targetLogicalIndex >= 0 && targetLogicalIndex < logicalHistory.value.length
+        ? targetLogicalIndex
+        : null,
+  };
+  updateSlidePermissions();
+};
 
-  // 检查是否接近列表底部，触发加载更多
-  const totalVideos = videos.value.length;
-  const activeIndex = swiper.activeIndex;
-
-  if (activeIndex >= totalVideos - 1 - loadMoreThreshold) {
-    console.log(
-      `Threshold reached: activeIndex = ${activeIndex}, totalVideos = ${totalVideos}, threshold = ${loadMoreThreshold}`
-    );
-    fetchData();
+const onTransitionEnd = (swiper) => {
+  if (!initialized || swiper.destroyed || !pendingTransition) return;
+  const settledSlot = swiper.realIndex % SLOT_COUNT;
+  const transition = pendingTransition;
+  pendingTransition = null;
+  isTransitioning.value = false;
+  if (settledSlot !== transition.toSlot) {
+    navigationLogicalIndex.value = currentLogicalIndex.value;
+    swiper.slideToLoop(lastSettledSlot, 0, false);
+    updateSlidePermissions();
+    return;
   }
+  if (settledSlot === transition.fromSlot) {
+    navigationLogicalIndex.value = currentLogicalIndex.value;
+    updateSlidePermissions();
+    return;
+  }
+
+  const forwardDistance = (settledSlot - transition.fromSlot + SLOT_COUNT) % SLOT_COUNT;
+  const backwardDistance = (transition.fromSlot - settledSlot + SLOT_COUNT) % SLOT_COUNT;
+  const direction = forwardDistance <= 2 ? "forward" : "backward";
+  const distance = direction === "forward" ? forwardDistance : backwardDistance;
+  if (
+    distance < 1 ||
+    distance > 2 ||
+    transition.targetLogicalIndex === null
+  ) {
+    navigationLogicalIndex.value = currentLogicalIndex.value;
+    swiper.slideToLoop(lastSettledSlot, 0, false);
+    updateSlidePermissions();
+    return;
+  }
+
+  currentLogicalIndex.value = transition.targetLogicalIndex;
+  navigationLogicalIndex.value = transition.targetLogicalIndex;
+  lastSettledSlot = settledSlot;
+  syncSlots();
+  updateSlidePermissions();
+  maybeFetchMore();
+};
+
+const preloadModeFor = (logicalIndex) => {
+  if (
+    activeTabIndex.value !== props.currentIndex ||
+    logicalIndex < 0 ||
+    isTransitioning.value
+  ) {
+    return "none";
+  }
+  const offset = logicalIndex - currentLogicalIndex.value;
+  if (offset === 0 || offset === 1) return "auto";
+  if (offset === 2 || offset === -1) return "metadata";
+  return "none";
 };
 
 onMounted(() => {
-  fetchData();
+  void fetchData();
 });
 
 onUnmounted(() => {
@@ -172,33 +267,40 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="tiktok-feed">
+  <div
+    class="tiktok-feed"
+    :data-logical-index="initialized ? currentLogicalIndex : ''"
+    :data-history-length="logicalHistory.length"
+  >
     <swiper
-      :modules="modules"
       direction="vertical"
       :slides-per-view="1"
       :space-between="0"
-      :virtual="true"
+      :loop="true"
+      :allow-slide-prev="initialized && navigationLogicalIndex > 0"
+      :allow-slide-next="initialized && navigationLogicalIndex + 1 < logicalHistory.length"
       @swiper="onSwiper"
-      @slideChange="onSlideChange"
+      @slideChangeTransitionStart="onTransitionStart"
+      @transitionEnd="onTransitionEnd"
       class="swiper-container"
       no-swiping-class="swiper-no-swiping"
     >
       <swiper-slide
-        v-for="(video, index) in videos"
-        :key="video.id"
-        :virtualIndex="index"
+        v-for="slot in slots"
+        :key="slot.slotId"
         class="swiper-slide-item"
       >
         <VideoPlayer
-          :video="video"
-          :index="index"
+          :video="slot.video"
+          :index="slot.logicalIndex"
           :isActive="
-            activeTabIndex == props.currentIndex
-              ? index === swiperInstance?.activeIndex
-              : false
+            !isTransitioning &&
+            activeTabIndex == props.currentIndex &&
+            slot.logicalIndex === currentLogicalIndex
           "
           :randomPlay="props.currentIndex == 2"
+          :preloadMode="preloadModeFor(slot.logicalIndex)"
+          :feedActive="activeTabIndex == props.currentIndex"
         />
       </swiper-slide>
     </swiper>
@@ -209,7 +311,7 @@ onUnmounted(() => {
 .tiktok-feed {
   position: relative;
   width: 100%;
-  height: 100%; /* 或者你期望的容器高度 */
+  height: 100%;
   overflow: hidden;
   background-color: #000;
 }
@@ -220,12 +322,12 @@ onUnmounted(() => {
 }
 
 .swiper-slide-item {
-  position: relative; /* 需要 position: relative 让加载提示绝对定位 */
+  position: relative;
   display: flex;
   justify-content: center;
   align-items: center;
   width: 100%;
   height: 100%;
-  background-color: #111; /* 给 slide 一个背景色，防止视频未加载时透明 */
+  background-color: #111;
 }
 </style>
