@@ -123,6 +123,8 @@ docker build -t nas-tiktok:local .
 
 The `Dockerfile` builds Vue `client/dist` with Node.js, then builds the backend with Go 1.24. The final image runs one Go process to serve both the API and frontend files. Account credentials and the JWT signing key are supplied at runtime and are not copied into the final image. The local Docker image build and container startup with a temporary media library and persistent database directory were verified; real NAS mounts and production deployment were not tested.
 
+Building requires BuildKit because the Dockerfile uses a read-only mount from another build stage; starting an image from an exported tar does not require BuildKit.
+
 At deployment, SQLite data is stored in `$HOME/workspace/NAS-TikTok/db/` and mounted read-write at `/workspace/db`. The media and certificate directories remain read-only mounts.
 
 On first startup, the new image's initializer reads Docker's actual UID:GID and adjusts ownership of the container-owned `/workspace` tree, including `db/` and `client/dist/`, while preserving existing permission modes and never using `1777`. If `/workspace` itself is a mountpoint, it leaves the host-backed tree untouched; media, certificates, and other mountpoints are skipped. A dedicated read-write `/workspace/db` volume is the exception: only that directory and the SQLite file named by `DB_PATH` plus its `-wal`, `-shm`, and `-journal` files are handled; read-only database volumes are left unchanged. `DB_PATH` does not expand initialization beyond `/workspace`, and paths outside `/workspace` are never chowned. Once ownership matches, later starts perform only an O(1) metadata check and do not repeat the traversal or chown.

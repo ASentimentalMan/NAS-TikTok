@@ -42,10 +42,11 @@ RUN mkdir -p /workspace/db && chown app:app /workspace/db && chmod 0755 /workspa
 EXPOSE 3000
 COPY --from=client-builder /app/client/dist /workspace/client/dist
 COPY --from=server-builder /out/nas-tiktok /usr/local/bin/nas-tiktok
-COPY --from=server-builder /out/nas-tiktok-init /usr/local/bin/nas-tiktok-init
 
 # Allow the initializer to activate CHOWN only when ownership requires repair.
-RUN apk add --no-cache --virtual .setcap-deps libcap-utils && \
+RUN --mount=type=bind,from=server-builder,source=/out/nas-tiktok-init,target=/tmp/nas-tiktok-init,ro \
+    apk add --no-cache --virtual .setcap-deps libcap-utils && \
+    cp /tmp/nas-tiktok-init /usr/local/bin/nas-tiktok-init && \
     setcap cap_chown=p /usr/local/bin/nas-tiktok-init && \
     apk del .setcap-deps
 

@@ -123,6 +123,8 @@ docker build -t nas-tiktok:local .
 
 `Dockerfile` 在构建阶段用 Node.js 生成 Vue `client/dist`，再用 Go 1.24 构建后端；最终镜像由 Go 进程同时提供 API 和前端静态文件。账号、密码和 JWT 密钥通过运行时环境提供，不复制进最终镜像。本地 Docker 镜像构建及使用临时媒体库和持久化数据库目录的容器启动已验证；真实 NAS 挂载与生产部署流程未验证。
 
+构建需要启用 BuildKit，因为 Dockerfile 使用跨构建阶段的只读挂载；启动已导出的镜像 tar 不需要 BuildKit。
+
 部署时，SQLite 数据库保存在 `$HOME/workspace/NAS-TikTok/db/`，并以读写方式挂载到容器的 `/workspace/db`。媒体和证书目录仍以只读方式挂载。
 
 新镜像首次启动时，初始化入口读取 Docker 实际传入的 UID:GID，为容器自有的 `/workspace` 树（包括 `db/` 与 `client/dist/`）调整属主，保留权限模式且不使用 `1777`。如果 `/workspace` 本身是挂载点，则不改动宿主目录树；媒体、证书和其他挂载点会跳过。专用读写 `/workspace/db` 卷只处理该目录及 `DB_PATH` 指定的 SQLite 文件和 `-wal`、`-shm`、`-journal` 文件；只读数据库卷不改动。`DB_PATH` 不会扩大初始化范围，`/workspace` 外的路径不会被 chown。属主匹配后，后续启动只做 O(1) 元数据检查，不重复遍历或 chown。
